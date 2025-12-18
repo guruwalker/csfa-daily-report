@@ -1,6 +1,6 @@
 """
 Enhanced Email Module for CSFA Report
-Sends daily reports with professional formatting and comprehensive analytics.
+Sends daily reports with professional formatting and error handling.
 """
 
 import os
@@ -8,7 +8,7 @@ import smtplib
 import logging
 from email.message import EmailMessage
 from datetime import datetime
-from typing import List, Optional, Dict
+from typing import List, Optional
 from pathlib import Path
 import mimetypes
 import pandas as pd
@@ -66,78 +66,44 @@ class EmailConfig:
 
 
 # ============================================================================
-# DATA ANALYSIS
-# ============================================================================
-
-class ReportAnalyzer:
-    """Analyze report data for insights."""
-
-    @staticmethod
-    def calculate_totals(df: pd.DataFrame) -> Dict:
-        """Calculate overall totals."""
-        return {
-            "total_customers_visited": int(df["CUSTOMERS VISITED"].sum()),
-            "total_customers_called": int(df["CUSTOMERS CALLED"].sum()),
-            "total_order_value_visits": float(df["ORDER VALUE FROM VISITS"].sum()),
-            "total_order_value_calls": float(df["ORDER VALUE FROM CALLS"].sum()),
-            "total_salespersons": len(df),
-        }
-
-    @staticmethod
-    def calculate_averages(df: pd.DataFrame) -> Dict:
-        """Calculate average performance metrics."""
-        return {
-            "avg_customers_visited": df["CUSTOMERS VISITED"].mean(),
-            "avg_customers_called": df["CUSTOMERS CALLED"].mean(),
-            "avg_order_value_visits": df["ORDER VALUE FROM VISITS"].mean(),
-            "avg_order_value_calls": df["ORDER VALUE FROM CALLS"].mean(),
-        }
-
-
-# ============================================================================
 # HTML TABLE GENERATOR
 # ============================================================================
 
 class HTMLTableGenerator:
-    """Generate HTML tables from DataFrames with professional styling."""
+    """Generate HTML tables from DataFrames."""
 
-    # Enhanced styling constants
+    # Styling constants
     HEADER_STYLE = (
-        "background: linear-gradient(135deg, #4F81BD 0%, #2F5F8D 100%); "
-        "color: #ffffff; "
+        "background-color: #4F81BD; "
+        "color: #FFFFFF; "
         "font-weight: bold; "
-        "padding: 14px 12px; "
+        "padding: 12px; "
         "text-align: left; "
         "border: 1px solid #2F5F8D; "
-        "font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; "
-        "font-size: 13px; "
-        "letter-spacing: 0.3px; "
-        "text-transform: uppercase;"
+        "font-family: Arial, sans-serif;"
     )
 
     CELL_STYLE = (
-        "padding: 12px; "
-        "border: 1px solid #e0e0e0; "
+        "padding: 10px; "
+        "border: 1px solid #ddd; "
         "text-align: left; "
-        "font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; "
-        "font-size: 13px;"
+        "font-family: Arial, sans-serif; "
+        "color: #333333;"
     )
 
     TABLE_STYLE = (
         "border-collapse: collapse; "
         "width: 100%; "
-        "margin: 25px 0; "
-        "box-shadow: 0 4px 6px rgba(0,0,0,0.1); "
-        "border-radius: 8px; "
-        "overflow: hidden;"
+        "margin: 20px 0; "
+        "box-shadow: 0 2px 4px rgba(0,0,0,0.1);"
     )
 
-    ALT_ROW_STYLE = "background-color: #f8f9fa;"
+    ALT_ROW_STYLE = "background-color: #f9f9f9;"
 
     @classmethod
     def generate(cls, df: pd.DataFrame, format_money: bool = True) -> str:
         """
-        Generate HTML table from DataFrame with enhanced styling.
+        Generate HTML table from DataFrame.
 
         Args:
             df: DataFrame to convert
@@ -147,17 +113,27 @@ class HTMLTableGenerator:
             HTML table string
         """
         if df.empty:
-            return "<p style='font-style: italic; opacity: 0.7;'>No data available</p>"
+            return "<p><em>No data available</em></p>"
 
-        # Format numeric columns
+        # Format display for specific columns
         df_formatted = df.copy()
-        numeric_cols = df_formatted.select_dtypes(include=['number']).columns
 
-        if format_money:
-            for col in numeric_cols:
+        # Format customer count columns as integers (no decimals)
+        customer_columns = ['CUSTOMERS VISITED', 'CUSTOMERS CALLED']
+        for col in customer_columns:
+            if col in df_formatted.columns:
                 df_formatted[col] = df_formatted[col].apply(
-                    lambda x: f"{x:,.2f}" if pd.notnull(x) else "0.00"
+                    lambda x: f"{int(x):,}" if pd.notnull(x) else ""
                 )
+
+        # Format money columns
+        if format_money:
+            money_columns = ['ORDER VALUE FROM VISITS', 'ORDER VALUE FROM CALLS']
+            for col in money_columns:
+                if col in df_formatted.columns:
+                    df_formatted[col] = df_formatted[col].apply(
+                        lambda x: f"{x:,.2f}" if pd.notnull(x) else ""
+                    )
 
         # Build HTML table
         html = f'<table style="{cls.TABLE_STYLE}">'
@@ -172,12 +148,12 @@ class HTMLTableGenerator:
         html += '<tbody>'
         for idx, row in df_formatted.iterrows():
             row_style = cls.ALT_ROW_STYLE if idx % 2 == 1 else ""
-
             html += f'<tr style="{row_style}">'
             for col in df_formatted.columns:
                 value = row[col]
                 # Right-align numbers
-                align = "right" if col in numeric_cols else "left"
+                is_numeric = col in customer_columns or col in money_columns
+                align = "right" if is_numeric else "left"
                 cell_style = cls.CELL_STYLE + f" text-align: {align};"
                 html += f'<td style="{cell_style}">{value}</td>'
             html += '</tr>'
@@ -186,62 +162,28 @@ class HTMLTableGenerator:
 
         return html
 
-    @classmethod
-    def generate_metrics_card(cls, title: str, value: str, subtitle: str = "", color: str = "#4F81BD") -> str:
-        """Generate a metric card HTML."""
-        return f"""
-        <div style="
-            display: inline-block;
-            background: white;
-            border-left: 4px solid {color};
-            padding: 16px 20px;
-            margin: 10px 10px 10px 0;
-            border-radius: 6px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.08);
-            min-width: 180px;
-        ">
-            <div style="
-                font-size: 12px;
-                opacity: 0.7;
-                font-weight: 600;
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
-                margin-bottom: 8px;
-            ">{title}</div>
-            <div style="
-                font-size: 28px;
-                font-weight: bold;
-                color: {color};
-                margin-bottom: 4px;
-            ">{value}</div>
-            {f'<div style="font-size: 11px; opacity: 0.6;">{subtitle}</div>' if subtitle else ''}
-        </div>
-        """
-
 
 # ============================================================================
 # EMAIL BUILDER
 # ============================================================================
 
 class EmailBuilder:
-    """Build email messages with attachments and professional formatting."""
+    """Build email messages with attachments."""
 
     def __init__(self, config: EmailConfig):
         self.config = config
-        self.html_gen = HTMLTableGenerator()
-        self.analyzer = ReportAnalyzer()
 
     def build_message(
         self,
-        df_summary: pd.DataFrame,
+        summary_html: str,
         date_str: str,
         attachments: Optional[List[str]] = None
     ) -> EmailMessage:
         """
-        Build complete email message with comprehensive analytics.
+        Build complete email message.
 
         Args:
-            df_summary: Summary DataFrame
+            summary_html: HTML table with summary data
             date_str: Date string for subject
             attachments: List of file paths to attach
 
@@ -251,7 +193,7 @@ class EmailBuilder:
         msg = EmailMessage()
 
         # Set headers
-        msg["From"] = f"{self.config.SENDER_NAME} <{self.config.SENDER_EMAIL}>"
+        msg["From"] = self.config.SENDER_EMAIL
         msg["To"] = ", ".join(self.config.clean_recipients(self.config.TO_RECIPIENTS))
 
         cc_recipients = self.config.clean_recipients(self.config.CC_RECIPIENTS)
@@ -267,7 +209,7 @@ class EmailBuilder:
         msg["Subject"] = subject
 
         # Build HTML body
-        body = self._build_html_body(df_summary, date_str)
+        body = self._build_html_body(summary_html, date_str)
         msg.add_alternative(body, subtype="html")
 
         # Add attachments
@@ -277,223 +219,60 @@ class EmailBuilder:
 
         return msg
 
-    def _build_html_body(self, df_summary: pd.DataFrame, date_str: str) -> str:
-        """Build comprehensive HTML email body with analytics."""
+    def _build_html_body(self, summary_html: str, date_str: str) -> str:
+        """Build HTML email body."""
+        # Parse date to get day name
+        from datetime import datetime
+        try:
+            date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+            day_name = date_obj.strftime("%A")
+            formatted_date = f"{day_name}, {date_str}"
+        except:
+            formatted_date = date_str
 
-        # Calculate analytics
-        totals = self.analyzer.calculate_totals(df_summary)
-        averages = self.analyzer.calculate_averages(df_summary)
-
-        # Generate summary table
-        summary_html = self.html_gen.generate(df_summary, format_money=True)
-
-        # Build metrics cards
-        metrics_html = self._build_metrics_section(totals, averages)
+        # Get current time for automation message
+        current_time = datetime.now().strftime("%I:%M %p")
 
         return f"""
         <!DOCTYPE html>
         <html>
         <head>
             <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <style>
                 body {{
-                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+                    font-family: Arial, sans-serif;
                     line-height: 1.6;
-                    background-color: #f5f5f5;
-                    margin: 0;
-                    padding: 0;
-                }}
-                .container {{
-                    max-width: 900px;
-                    margin: 0 auto;
-                    background-color: #ffffff;
-                    padding: 0;
+                    color: #333;
                 }}
                 .header {{
-                    background: linear-gradient(135deg, #4F81BD 0%, #2F5F8D 100%);
-                    color: #ffffff;
-                    padding: 30px;
-                    text-align: center;
-                }}
-                .header h1 {{
-                    margin: 0;
-                    font-size: 26px;
-                    font-weight: 600;
-                    color: #ffffff;
-                }}
-                .header p {{
-                    margin: 10px 0 0 0;
-                    font-size: 14px;
-                    opacity: 0.9;
-                    color: #ffffff;
-                }}
-                .content {{
-                    padding: 30px;
-                }}
-                .section {{
-                    margin-bottom: 35px;
-                }}
-                .section-title {{
-                    font-size: 20px;
-                    font-weight: 600;
-                    color: #2F5F8D;
+                    color: #4F81BD;
                     margin-bottom: 20px;
-                    padding-bottom: 10px;
-                    border-bottom: 2px solid #4F81BD;
-                }}
-                .metrics-grid {{
-                    display: flex;
-                    flex-wrap: wrap;
-                    gap: 15px;
-                    margin: 20px 0;
-                }}
-                .info-box {{
-                    background: #f8f9fa;
-                    border-left: 4px solid #4F81BD;
-                    padding: 15px 20px;
-                    margin: 15px 0;
-                    border-radius: 4px;
                 }}
                 .footer {{
-                    background-color: #f8f9fa;
-                    padding: 25px 30px;
                     margin-top: 30px;
-                    border-top: 3px solid #4F81BD;
-                }}
-                .footer-signature {{
-                    margin: 15px 0;
-                    line-height: 1.8;
-                }}
-                .footer-disclaimer {{
-                    margin-top: 20px;
-                    padding-top: 15px;
-                    border-top: 1px solid #ddd;
-                    font-size: 11px;
-                    opacity: 0.7;
-                    font-style: italic;
-                }}
-
-                /* Dark mode support */
-                @media (prefers-color-scheme: dark) {{
-                    body {{
-                        background-color: #1a1a1a;
-                    }}
-                    .container {{
-                        background-color: #2d2d2d;
-                        color: #e0e0e0;
-                    }}
-                    .section-title {{
-                        color: #6fa3d8;
-                    }}
-                    .info-box {{
-                        background: #3a3a3a;
-                        color: #e0e0e0;
-                    }}
-                    .footer {{
-                        background-color: #3a3a3a;
-                        color: #e0e0e0;
-                    }}
-                }}
-
-                /* Mobile responsiveness */
-                @media only screen and (max-width: 600px) {{
-                    .content {{
-                        padding: 20px;
-                    }}
-                    .header h1 {{
-                        font-size: 22px;
-                    }}
-                    .section-title {{
-                        font-size: 18px;
-                    }}
-                    .metrics-grid {{
-                        flex-direction: column;
-                    }}
-                    table {{
-                        font-size: 12px;
-                    }}
+                    color: #666;
+                    font-size: 0.9em;
                 }}
             </style>
         </head>
         <body>
-            <div class="container">
-                <div class="header">
-                    <h1>📊 Tintas Berger CSFA Daily Report</h1>
-                    <p>{date_str} | Customer Sales & Field Activity</p>
-                </div>
+            <p>Greetings {self.config.RECIPIENT_NAME},</p>
 
-                <div class="content">
-                    <div class="section">
-                        <p style="font-size: 15px;">Dear {self.config.RECIPIENT_NAME},</p>
-                        <p style="font-size: 14px; line-height: 1.8;">
-                            Please find the daily Customer Sales and Field Activity (CSFA) report for <strong>{date_str}</strong>.
-                        </p>
-                    </div>
+            <p>Please find attached the daily Tintas Berger CSFA report for <strong>{formatted_date}</strong>.</p>
 
-                    <div class="section">
-                        <div class="section-title">📈 Key Performance Indicators</div>
-                        {metrics_html}
-                    </div>
+            {summary_html}
 
-                    <div class="section">
-                        <div class="section-title">👥 Detailed Performance by Salesperson</div>
-                        {summary_html}
-                    </div>
+            <p>The complete detailed report is attached as an Excel file.</p>
 
-                    <div class="info-box">
-                        <strong>📎 Attachment:</strong> The complete detailed Excel report is attached.
-                    </div>
-                </div>
+            <div class="footer">
+                <p>Kind regards,<br>
+                <strong>{self.config.SENDER_NAME}</strong></p>
 
-                <div class="footer">
-                    <div class="footer-signature">
-                        Kind regards,<br>
-                        <strong>{self.config.SENDER_NAME}</strong>
-                    </div>
-
-                    <div class="footer-disclaimer">
-                        This is an automated report. Please do not reply to this email.
-                    </div>
-                </div>
+                <p><em>This is an automated report sent at {current_time} on {formatted_date}.</em></p>
             </div>
         </body>
         </html>
         """
-
-    def _build_metrics_section(self, totals: Dict, averages: Dict) -> str:
-        """Build metrics cards section."""
-        total_customers = totals["total_customers_visited"] + totals["total_customers_called"]
-        total_revenue = totals["total_order_value_visits"] + totals["total_order_value_calls"]
-
-        metrics = [
-            self.html_gen.generate_metrics_card(
-                "Total Customers",
-                f"{total_customers:,}",
-                f"{totals['total_customers_visited']} visited, {totals['total_customers_called']} called",
-                "#4F81BD"
-            ),
-            self.html_gen.generate_metrics_card(
-                "Total Revenue",
-                f"{total_revenue:,.2f} MZN",
-                f"From {totals['total_salespersons']} salespersons",
-                "#28a745"
-            ),
-            self.html_gen.generate_metrics_card(
-                "Avg. Customers/Rep",
-                f"{total_customers / totals['total_salespersons']:.1f}",
-                "Per salesperson",
-                "#ff6b6b"
-            ),
-            self.html_gen.generate_metrics_card(
-                "Avg. Order Value",
-                f"{total_revenue / total_customers:,.2f} MZN",
-                "Per customer",
-                "#ffa500"
-            ),
-        ]
-
-        return '<div class="metrics-grid">' + ''.join(metrics) + '</div>'
 
     def _attach_file(self, msg: EmailMessage, filepath: str) -> None:
         """Attach a file to the email message."""
@@ -598,7 +377,7 @@ def send_report(
     additional_attachments: Optional[List[str]] = None
 ) -> bool:
     """
-    Send CSFA report via email with comprehensive analytics.
+    Send CSFA report via email.
 
     Args:
         excel_file: Path to Excel file (optional, uses config default)
@@ -633,13 +412,27 @@ def send_report(
             logger.error(f"❌ Failed to read Excel file: {e}")
             return False
 
+        # Generate KPI section
+        logger.info("📈 Calculating KPIs...")
+        kpi_html = _generate_kpi_section(df_summary)
+
+        # Generate detailed performance table
+        logger.info("🎨 Generating performance table...")
+        html_generator = HTMLTableGenerator()
+        performance_html = html_generator.generate(df_summary, format_money=True)
+
+        # Combine sections
+        summary_html = f"""
+        {kpi_html}
+        <h3 style="color: #4F81BD; margin-top: 30px;">Detailed Performance by Salesperson</h3>
+        {performance_html}
+        """
+
         # Save HTML preview (optional, for debugging)
         if os.getenv("SAVE_HTML_PREVIEW", "").lower() == "true":
-            preview_file = "email_preview.html"
-            builder = EmailBuilder(EmailConfig)
-            html_content = builder._build_html_body(df_summary, date_str)
+            preview_file = "summary_email_preview.html"
             with open(preview_file, "w", encoding="utf-8") as f:
-                f.write(html_content)
+                f.write(summary_html)
             logger.info(f"💾 HTML preview saved: {preview_file}")
 
         # Collect attachments
@@ -650,7 +443,7 @@ def send_report(
         # Build email
         logger.info("✉️ Building email message...")
         builder = EmailBuilder(EmailConfig)
-        msg = builder.build_message(df_summary, date_str, attachments)
+        msg = builder.build_message(summary_html, date_str, attachments)
 
         # Send email
         sender = EmailSender(EmailConfig)
@@ -666,6 +459,51 @@ def send_report(
     except Exception as e:
         logger.error(f"❌ Error in send_report: {e}", exc_info=True)
         return False
+
+
+def _generate_kpi_section(df_summary: pd.DataFrame) -> str:
+    """Generate KPI summary section with total customers and revenue."""
+    try:
+        # Get currency from environment or default to MZN
+        currency = os.getenv("REPORT_CURRENCY", "MZN")
+
+        # Calculate totals
+        total_customers_visited = df_summary["CUSTOMERS VISITED"].sum()
+        total_customers_called = df_summary["CUSTOMERS CALLED"].sum()
+        total_customers = total_customers_visited + total_customers_called
+
+        total_revenue_visits = df_summary["ORDER VALUE FROM VISITS"].sum()
+        total_revenue_calls = df_summary["ORDER VALUE FROM CALLS"].sum()
+        total_revenue = total_revenue_visits + total_revenue_calls
+
+        # Format numbers
+        total_customers_str = f"{int(total_customers):,}"
+        total_revenue_str = f"{currency} {total_revenue:,.2f}"
+
+        # Generate KPI HTML
+        kpi_html = f"""
+        <div style="margin: 20px 0;">
+            <h3 style="color: #4F81BD; margin-bottom: 15px;">Key Performance Indicators</h3>
+            <table style="border-collapse: collapse; width: 100%; margin-bottom: 20px;">
+                <tr>
+                    <td style="padding: 15px; background-color: #E8F4F8; border: 2px solid #4F81BD; width: 50%; text-align: center;">
+                        <div style="font-size: 14px; color: #666; margin-bottom: 5px;">TOTAL CUSTOMERS (Visited & Called)</div>
+                        <div style="font-size: 28px; font-weight: bold; color: #4F81BD;">{total_customers_str}</div>
+                    </td>
+                    <td style="padding: 15px; background-color: #E8F4F8; border: 2px solid #4F81BD; width: 50%; text-align: center;">
+                        <div style="font-size: 14px; color: #666; margin-bottom: 5px;">TOTAL ORDER REVENUE</div>
+                        <div style="font-size: 28px; font-weight: bold; color: #4F81BD;">{total_revenue_str}</div>
+                    </td>
+                </tr>
+            </table>
+        </div>
+        """
+
+        return kpi_html
+
+    except Exception as e:
+        logger.error(f"Error generating KPI section: {e}")
+        return ""
 
 
 # ============================================================================

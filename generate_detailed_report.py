@@ -1,20 +1,32 @@
 """
-Enhanced CSFA Report Generator
-Generates detailed Excel reports with professional styling and comprehensive data.
+Refactored CSFA Report Generator
+Generates detailed Excel reports with visits, orders, and product details.
 """
 
+import pandas as pd
 import os
 import logging
-from typing import List, Dict, Optional
+from typing import List, Dict, Any, Set, Tuple
 from dataclasses import dataclass
-
-import pandas as pd
-import dataframe_image as dfi
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.worksheet import Worksheet
+
+# Optional: dataframe_image for summary export
+try:
+    import dataframe_image as dfi
+    HAS_DFI = True
+except ImportError:
+    HAS_DFI = False
+    logging.warning("dataframe_image not installed. Summary image export disabled.")
 
 from api_client import get_order_details
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 
@@ -25,74 +37,30 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ReportConfig:
     """Configuration for report generation."""
-
     output_file: str = "Daily_CSFA_Report.xlsx"
     summary_text_file: str = "summary_for_email.txt"
     summary_image_file: str = "summary_sheet.png"
-    summary_sheet: str = "Summary"
-    access_token: str = ""
+
+    # Styling colors
+    header_color: str = "4F81BD"
+    customer_fill_color: str = "4BACC6"  # Bright blue
+    product_header_color: str = "92D050"  # Light green
+    error_color: str = "FF0000"
+
+    # Fonts
+    header_font_name: str = "Times New Roman"
+    header_font_size: int = 12
+    body_font_name: str = "Times New Roman"
+    body_font_size: int = 12
 
     @classmethod
-    def from_env(cls) -> 'ReportConfig':
-        """Create configuration from environment variables."""
+    def from_env(cls):
+        """Create config from environment variables."""
         return cls(
             output_file=os.getenv("OUTPUT_FILE", "Daily_CSFA_Report.xlsx"),
             summary_text_file=os.getenv("SUMMARY_TEXT_FILE", "summary_for_email.txt"),
             summary_image_file=os.getenv("SUMMARY_IMAGE_FILE", "summary_sheet.png"),
-            summary_sheet=os.getenv("SUMMARY_SHEET", "Summary"),
-            access_token=os.getenv("ACCESS_TOKEN", "")
         )
-
-
-# ============================================================================
-# STYLING CONSTANTS
-# ============================================================================
-
-class ExcelStyles:
-    """Excel styling constants."""
-
-    # Fonts
-    HEADER_FONT = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
-    CUSTOMER_FONT = Font(name="Calibri", size=11, bold=True, color="1F4E78")
-    BODY_FONT = Font(name="Calibri", size=11)
-    ERROR_FONT = Font(name="Calibri", size=11, color="C00000", bold=True)
-    PRODUCT_HEADER_FONT = Font(name="Calibri", size=10, bold=True, color="FFFFFF")
-
-    # Fills
-    HEADER_FILL = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
-    CUSTOMER_FILL = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
-    PRODUCT_HEADER_FILL = PatternFill(start_color="5B9BD5", end_color="5B9BD5", fill_type="solid")
-    NO_ORDER_FILL = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
-
-    # Alignments
-    CENTER_ALIGN = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    LEFT_ALIGN = Alignment(horizontal="left", vertical="center", wrap_text=True)
-    RIGHT_ALIGN = Alignment(horizontal="right", vertical="center")
-
-    # Borders
-    THIN_BORDER = Border(
-        left=Side(style='thin', color='B4B4B4'),
-        right=Side(style='thin', color='B4B4B4'),
-        top=Side(style='thin', color='B4B4B4'),
-        bottom=Side(style='thin', color='B4B4B4')
-    )
-
-    THICK_BORDER = Border(
-        left=Side(style='medium', color='4472C4'),
-        right=Side(style='medium', color='4472C4'),
-        top=Side(style='medium', color='4472C4'),
-        bottom=Side(style='medium', color='4472C4')
-    )
-
-    # Column definitions for rep sheets
-    REP_COLUMNS = [
-        {"name": "Product/Customer", "width": 40},
-        {"name": "Visit Type", "width": 15},
-        {"name": "Time Spent", "width": 12},
-        {"name": "Qty", "width": 10},
-        {"name": "Unit Cost (MZN)", "width": 15},
-        {"name": "Order Value (MZN)", "width": 18},
-    ]
 
 
 # ============================================================================
@@ -100,7 +68,7 @@ class ExcelStyles:
 # ============================================================================
 
 class DataProcessor:
-    """Process visits and orders data."""
+    """Handles data cleaning and processing."""
 
     @staticmethod
     def clean_visits(visits_data: List[Dict]) -> pd.DataFrame:
@@ -124,8 +92,9 @@ class DataProcessor:
             balance_str = o.get("balance", "0").replace(",", "").strip()
             try:
                 balance = float(balance_str)
-            except:
+            except (ValueError, TypeError):
                 balance = 0.0
+
             order_rows.append({
                 "sales_rep": o.get("sales_rep", ""),
                 "customer_name": (o.get("customer_name") or "").strip(),
@@ -136,9 +105,12 @@ class DataProcessor:
         return pd.DataFrame(order_rows)
 
     @staticmethod
-    def merge_data(df_visits: pd.DataFrame, df_orders: pd.DataFrame) -> pd.DataFrame:
-        """Merge visits and orders data."""
-        # Merge by customer code
+    def merge_visits_orders(
+        df_visits: pd.DataFrame,
+        df_orders: pd.DataFrame
+    ) -> pd.DataFrame:
+        """Merge visits and orders data with fallback logic."""
+        # Merge by ERP code
         df_merge_code = pd.merge(
             df_visits,
             df_orders,
@@ -158,12 +130,13 @@ class DataProcessor:
             suffixes=("_visit", "_order")
         )
 
-        # Combine results
+        # Combine both merges
         df_final = df_merge_code.copy()
         for col in ["order_value", "customer_code", "sales_rep_order", "order_id"]:
             if col in df_merge_name.columns:
                 df_final[col] = df_final[col].combine_first(df_merge_name[col])
 
+        # Create final columns
         df_final["customer_name_final"] = df_final.get("customer_name_visit", pd.Series("")).combine_first(
             df_final.get("customer_name_order", pd.Series(""))
         )
@@ -174,72 +147,221 @@ class DataProcessor:
         return df_final
 
     @staticmethod
-    def find_called_customers(df_visits: pd.DataFrame, df_orders: pd.DataFrame) -> pd.DataFrame:
+    def get_called_customers(
+        df_visits: pd.DataFrame,
+        df_orders: pd.DataFrame
+    ) -> pd.DataFrame:
         """Find customers who were called but not visited."""
         visited_customers = set(df_visits["customer_name"])
         df_called = df_orders[~df_orders["customer_name"].isin(visited_customers)].copy()
         df_called["customer_called"] = df_called["customer_name"]
         return df_called
 
+    @staticmethod
+    def get_sales_reps(
+        df_final: pd.DataFrame,
+        df_called: pd.DataFrame
+    ) -> List[str]:
+        """Get sorted list of all sales representatives."""
+        reps = set(df_final["sales_rep_final"].dropna()).union(
+            df_called["sales_rep"].dropna()
+        )
+        return sorted(reps)
+
 
 # ============================================================================
-# EXCEL GENERATOR
+# EXCEL STYLING
 # ============================================================================
 
-class ExcelGenerator:
-    """Generate Excel reports with professional styling."""
+class ExcelStyler:
+    """Handles Excel worksheet styling."""
 
     def __init__(self, config: ReportConfig):
         self.config = config
-        self.styles = ExcelStyles()
 
-    def apply_summary_styling(self, ws):
-        """Apply styling to summary sheet."""
+    def calculate_row_height(self, text: str, column_width: float, font_size: int = 12) -> float:
+        """
+        Calculate the required row height for wrapped text.
+        More accurate calculation based on actual character counting.
+
+        Args:
+            text: The text content
+            column_width: Width of the column in Excel units
+            font_size: Font size in points
+
+        Returns:
+            Required row height in points
+        """
+        if not text or pd.isna(text):
+            return 15  # Default row height
+
+        text = str(text)
+
+        # Excel column width is measured in character widths
+        # For Times New Roman 12pt, roughly 7 pixels per character
+        # Column width in Excel is based on default font character width
+        # Using 0.85 for more conservative estimate (ensures text fits)
+        chars_per_line = max(1, int(column_width * 0.85))
+
+        # Split by newlines first (in case there are explicit line breaks)
+        lines = text.split('\n')
+        total_lines = 0
+
+        for line in lines:
+            if len(line) == 0:
+                total_lines += 1
+            else:
+                # Calculate how many wrapped lines this line will take
+                line_count = max(1, int(len(line) / chars_per_line) + (1 if len(line) % chars_per_line > 0 else 0))
+                total_lines += line_count
+
+        # Calculate row height with more generous spacing
+        # Base line height: font_size * 1.3 (generous line spacing)
+        # Add padding: +8 points for readability
+        line_height = font_size * 1.3
+        calculated_height = (total_lines * line_height) + 8
+
+        # Ensure minimum height of 18 points, maximum of 409 (Excel limit)
+        return max(18, min(409, calculated_height))
+
+    def apply_summary_styling(self, ws: Worksheet) -> None:
+        """Apply styling to summary sheet (wrap text, wider columns, with borders)."""
+        if not ws or ws.max_row == 0:
+            logger.warning("Empty worksheet, skipping styling")
+            return
+
+        # Define border style
+        thin_border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
+
         # Style header row
-        for col_idx, cell in enumerate(ws[1], start=1):
-            cell.font = self.styles.HEADER_FONT
-            cell.fill = self.styles.HEADER_FILL
-            cell.alignment = self.styles.CENTER_ALIGN
-            cell.border = self.styles.THIN_BORDER
+        header_font = Font(
+            name=self.config.header_font_name,
+            size=self.config.header_font_size,
+            bold=True,
+            color="FFFFFF"
+        )
+        header_fill = PatternFill(
+            start_color=self.config.header_color,
+            end_color=self.config.header_color,
+            fill_type="solid"
+        )
+        header_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+        try:
+            for col_idx, cell in enumerate(ws[1], start=1):
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = header_align
+                cell.border = thin_border
+        except IndexError:
+            logger.warning("Cannot style header row - worksheet may be empty")
+            return
 
         # Style body rows
-        for row_idx, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=ws.max_column), start=2):
-            for col_idx, cell in enumerate(row, start=1):
-                cell.font = self.styles.BODY_FONT
-                cell.border = self.styles.THIN_BORDER
+        body_font = Font(
+            name=self.config.body_font_name,
+            size=self.config.body_font_size
+        )
+        body_align = Alignment(horizontal="left", vertical="center", wrap_text=True)
 
-                # Center align text columns, right align numbers
-                if col_idx == 1:  # Salesperson column
-                    cell.alignment = self.styles.LEFT_ALIGN
-                elif col_idx in [2, 4]:  # Customer count columns
-                    cell.alignment = self.styles.CENTER_ALIGN
-                else:  # Value columns
-                    cell.alignment = self.styles.RIGHT_ALIGN
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
+            for cell in row:
+                cell.font = body_font
+                cell.alignment = body_align
+                cell.border = thin_border
 
-        # Auto-adjust column widths
+        # Set wider column widths to minimize wrapping
         column_widths = {
-            1: 25,  # Salesperson
-            2: 18,  # Customers Visited
-            3: 22,  # Order Value from Visits
-            4: 18,  # Customers Called
-            5: 22,  # Order Value from Calls
+            1: 25,  # SALESPERSON
+            2: 20,  # CUSTOMERS VISITED
+            3: 30,  # ORDER VALUE FROM VISITS
+            4: 20,  # CUSTOMERS CALLED
+            5: 30,  # ORDER VALUE FROM CALLS
         }
 
         for col_idx, width in column_widths.items():
-            ws.column_dimensions[get_column_letter(col_idx)].width = width
+            if col_idx <= ws.max_column:
+                column = get_column_letter(col_idx)
+                ws.column_dimensions[column].width = width
 
-        # Freeze header row
-        ws.freeze_panes = ws['A2']
+        # Set header row height (row 1)
+        ws.row_dimensions[1].height = 30  # Fixed height for header
 
-    def create_summary_sheet(self, writer, df_final: pd.DataFrame, df_called: pd.DataFrame, reps: List[str]):
-        """Create and style summary sheet."""
+        # Calculate and set row heights for data rows (row 2 onwards)
+        for row_idx in range(2, ws.max_row + 1):
+            max_height = 18  # Default minimum height for data rows
+
+            for col_idx in range(1, ws.max_column + 1):
+                cell = ws.cell(row=row_idx, column=col_idx)
+                cell_value = cell.value
+
+                # Skip empty cells
+                if cell_value is None or (isinstance(cell_value, str) and not cell_value.strip()):
+                    continue
+
+                # Get column width for this column
+                col_width = column_widths.get(col_idx, 20)
+
+                # Calculate required height
+                try:
+                    height = self.calculate_row_height(cell_value, col_width, self.config.body_font_size)
+                    max_height = max(max_height, height)
+                except Exception as e:
+                    logger.warning(f"Could not calculate height for row {row_idx}, col {col_idx}: {e}")
+                    max_height = max(max_height, 35)  # Fallback to larger height
+
+            # Set the row height
+            ws.row_dimensions[row_idx].height = max_height
+
+    def _auto_adjust_columns(self, ws: Worksheet) -> None:
+        """Auto-adjust column widths based on content."""
+        for col_idx, col in enumerate(ws.columns, start=1):
+            max_length = 0
+            column = get_column_letter(col_idx)
+
+            for cell in col:
+                if cell.value:
+                    max_length = max(max_length, len(str(cell.value)))
+
+            adjusted_width = min(max_length + 2, 50)  # Cap at 50
+            ws.column_dimensions[column].width = adjusted_width
+
+    def format_money_columns(self, ws: Worksheet, columns: List[int]) -> None:
+        """Format specific columns as money."""
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+            for col_idx in columns:
+                if col_idx < len(row):
+                    row[col_idx].number_format = '#,##0.00'
+
+
+# ============================================================================
+# SUMMARY GENERATOR
+# ============================================================================
+
+class SummaryGenerator:
+    """Generates summary reports."""
+
+    @staticmethod
+    def generate_summary(
+        reps: List[str],
+        df_final: pd.DataFrame,
+        df_called: pd.DataFrame
+    ) -> pd.DataFrame:
+        """Generate summary statistics for each sales rep."""
         summary_rows = []
 
         for rep in reps:
+            # Visits data
             rep_visits = df_final[df_final["sales_rep_final"] == rep]
             customers_visited = rep_visits["customer_name_final"].nunique()
             order_value_visits = rep_visits["order_value"].sum()
 
+            # Calls data
             rep_calls = df_called[df_called["sales_rep"] == rep]
             customers_called = rep_calls["customer_called"].nunique()
             order_value_calls = rep_calls["order_value"].sum()
@@ -252,51 +374,101 @@ class ExcelGenerator:
                 "ORDER VALUE FROM CALLS": order_value_calls
             })
 
-        df_summary = pd.DataFrame(summary_rows)
+        return pd.DataFrame(summary_rows)
 
-        # Write to Excel
-        df_summary.to_excel(writer, index=False, sheet_name=self.config.summary_sheet)
-        ws = writer.sheets[self.config.summary_sheet]
-        self.apply_summary_styling(ws)
-
-        # Format numeric columns as money
-        for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
-            row[2].number_format = '#,##0.00'  # Order Value from Visits
-            row[4].number_format = '#,##0.00'  # Order Value from Calls
-
-        # Save summary files
-        self._save_summary_files(df_summary)
-
-        return df_summary
-
-    def _save_summary_files(self, df_summary: pd.DataFrame):
-        """Save summary as text and image files."""
-        # Text file for email
+    @staticmethod
+    def export_summary_text(df_summary: pd.DataFrame, filepath: str) -> None:
+        """Export summary as formatted text for email."""
         summary_for_email = df_summary.copy()
-        summary_for_email["ORDER VALUE FROM VISITS"] = summary_for_email["ORDER VALUE FROM VISITS"].map("{:,.2f}".format)
-        summary_for_email["ORDER VALUE FROM CALLS"] = summary_for_email["ORDER VALUE FROM CALLS"].map("{:,.2f}".format)
 
-        with open(self.config.summary_text_file, "w") as f:
+        # Format numbers with commas
+        summary_for_email["ORDER VALUE FROM VISITS"] = \
+            summary_for_email["ORDER VALUE FROM VISITS"].map("{:,.2f}".format)
+        summary_for_email["ORDER VALUE FROM CALLS"] = \
+            summary_for_email["ORDER VALUE FROM CALLS"].map("{:,.2f}".format)
+
+        with open(filepath, "w") as f:
             f.write(summary_for_email.to_string(index=False))
 
-        logger.info(f"✅ Summary text saved: {self.config.summary_text_file}")
+        logger.info(f"✅ Summary text saved: {filepath}")
 
-        # Image file
+    @staticmethod
+    def export_summary_image(df_summary: pd.DataFrame, filepath: str) -> None:
+        """Export summary as image (optional)."""
+        if not HAS_DFI:
+            logger.warning("dataframe_image not available, skipping image export")
+            return
+
         try:
-            dfi.export(df_summary, self.config.summary_image_file)
-            logger.info(f"✅ Summary image saved: {self.config.summary_image_file}")
+            dfi.export(df_summary, filepath)
+            logger.info(f"✅ Summary image saved: {filepath}")
         except Exception as e:
-            logger.warning(f"⚠️ Could not save summary image: {e}")
+            logger.error(f"Failed to export summary image: {e}")
 
-    def create_rep_sheet(self, writer, rep: str, df_final: pd.DataFrame,
-                        df_called: pd.DataFrame, orders_data: List[Dict]):
-        """Create individual sales rep sheet with professional formatting."""
+
+# ============================================================================
+# REP SHEET GENERATOR
+# ============================================================================
+
+class RepSheetGenerator:
+    """Generates individual sales rep sheets."""
+
+    def __init__(self, access_token: str, config: ReportConfig):
+        self.access_token = access_token
+        self.config = config
+
+        # Initialize fill patterns
+        self.customer_fill = PatternFill(
+            start_color=config.customer_fill_color,
+            end_color=config.customer_fill_color,
+            fill_type="solid"
+        )
+        self.product_header_fill = PatternFill(
+            start_color=config.product_header_color,
+            end_color=config.product_header_color,
+            fill_type="solid"
+        )
+
+    def create_rep_sheet(
+        self,
+        writer: pd.ExcelWriter,
+        rep: str,
+        df_final: pd.DataFrame,
+        df_called: pd.DataFrame,
+        orders_data: List[Dict]
+    ) -> None:
+        """Create a complete sheet for a sales rep."""
+        logger.info(f"  Processing: {rep}")
+
+        # Build customer dictionary
         rep_visits = df_final[df_final["sales_rep_final"] == rep]
         rep_calls = df_called[df_called["sales_rep"] == rep]
+        customers = self._build_customer_dict(rep, rep_visits, rep_calls, orders_data)
 
+        # Create sheet name
+        sheet_name = rep.replace(".", "_").replace(" ", "_")[:31]
+
+        # Create empty worksheet
+        writer.book.create_sheet(sheet_name)
+        ws = writer.book[sheet_name]
+
+        # Write data with styling
+        self._write_rep_data(ws, customers, rep)
+
+        # Apply general styling (column widths and row heights)
+        self._adjust_column_widths_and_heights(ws)
+
+    def _build_customer_dict(
+        self,
+        rep: str,
+        rep_visits: pd.DataFrame,
+        rep_calls: pd.DataFrame,
+        orders_data: List[Dict]
+    ) -> Dict[str, Dict]:
+        """Build dictionary of customer information."""
         customers = {}
 
-        # Process visits
+        # Add visits
         for _, visit in rep_visits.iterrows():
             cust = visit["customer_name_final"]
             customers[cust] = {
@@ -305,7 +477,7 @@ class ExcelGenerator:
                 "orders": [],
             }
 
-        # Process calls
+        # Add calls
         for _, call in rep_calls.iterrows():
             cust = call["customer_called"]
             customers.setdefault(
@@ -315,7 +487,7 @@ class ExcelGenerator:
             if customers[cust]["visit_type"] == "Visited":
                 customers[cust]["visit_type"] = "Visited & Called"
 
-        # Process orders
+        # Add orders
         for order in orders_data:
             if order.get("sales_rep") != rep:
                 continue
@@ -330,216 +502,294 @@ class ExcelGenerator:
             )
             customers[cust]["orders"].append(order.get("id"))
 
-        # Create sheet
-        sheet_name = rep.replace(".", "_").replace(" ", "_")[:31]
-        ws = writer.book.create_sheet(title=sheet_name)
+        return customers
 
-        # Write data with proper formatting
-        self._write_rep_data(ws, customers, rep)
+    def _write_rep_data(self, ws: Worksheet, customers: Dict[str, Dict], rep: str) -> None:
+        """Write customer data to worksheet with styling."""
+        row_idx = 1
+        wrap_align = Alignment(horizontal="left", vertical="center", wrap_text=True)
 
-    def _write_rep_data(self, ws, customers: Dict, rep_name: str):
-        """Write customer data to worksheet with professional styling."""
-        current_row = 1
+        # Define border style
+        thin_border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
 
-        # Write sheet title
-        ws.merge_cells(f'A{current_row}:F{current_row}')
-        title_cell = ws.cell(row=current_row, column=1)
-        title_cell.value = f"Sales Activity Report - {rep_name}"
-        title_cell.font = Font(name="Calibri", size=14, bold=True, color="1F4E78")
-        title_cell.alignment = self.styles.CENTER_ALIGN
-        title_cell.fill = PatternFill(start_color="E7E6E6", end_color="E7E6E6", fill_type="solid")
-        current_row += 2
+        for cust_name, info in customers.items():
+            # Format customer name with visit type in brackets
+            visit_type = info["visit_type"]
+            if visit_type == "Visited":
+                customer_display = f"{cust_name} (visited)"
+            elif visit_type == "Called":
+                customer_display = f"{cust_name} (called)"
+            elif visit_type == "Visited & Called":
+                customer_display = f"{cust_name} (visited & called)"
+            else:
+                customer_display = cust_name
 
-        # Set column widths
-        for col_idx, col_info in enumerate(self.styles.REP_COLUMNS, start=1):
-            ws.column_dimensions[get_column_letter(col_idx)].width = col_info["width"]
+            # Customer header row - write values first
+            ws.cell(row=row_idx, column=1, value=customer_display)
 
-        # Process each customer
-        # for cust_name, info in sorted(customers.items()):
-        #     # Customer header row
-        #     ws.merge_cells(f'A{current_row}:C{current_row}')
-        #     customer_cell = ws.cell(row=current_row, column=1)
-        #     customer_cell.value = cust_name
-        #     customer_cell.font = self.styles.CUSTOMER_FONT
-        #     customer_cell.fill = self.styles.CUSTOMER_FILL
-        #     customer_cell.alignment = self.styles.LEFT_ALIGN
-        #     customer_cell.border = self.styles.THIN_BORDER
-        for cust_name, info in sorted(customers.items()):
-            # Customer header row (merge only A–B)
-            ws.merge_cells(start_row=current_row, start_column=1,
-                        end_row=current_row, end_column=2)
+            # Format time spent
+            time_spent = info["time_spent"]
+            if time_spent and visit_type in ["Visited", "Visited & Called"]:
+                time_display = f"Time Spent: {time_spent}"
+            else:
+                time_display = ""
 
-            customer_cell = ws.cell(row=current_row, column=1)
-            customer_cell.value = cust_name
-            customer_cell.font = self.styles.CUSTOMER_FONT
-            customer_cell.fill = self.styles.CUSTOMER_FILL
-            customer_cell.alignment = self.styles.LEFT_ALIGN
-            customer_cell.border = self.styles.THIN_BORDER
+            ws.cell(row=row_idx, column=2, value=time_display)
+            ws.cell(row=row_idx, column=3, value="")
+            ws.cell(row=row_idx, column=4, value="")
+            ws.cell(row=row_idx, column=5, value="")
+            ws.cell(row=row_idx, column=6, value="")
+            ws.cell(row=row_idx, column=7, value="")
 
-            # Apply fill & border to the merged partner cell (B)
-            partner_cell = ws.cell(row=current_row, column=2)
-            partner_cell.fill = self.styles.CUSTOMER_FILL
-            partner_cell.border = self.styles.THIN_BORDER
+            # Style customer header with Times New Roman font, wrap text, and borders
+            for col_idx in range(1, 8):
+                cell = ws.cell(row=row_idx, column=col_idx)
+                cell.fill = self.customer_fill
+                cell.font = Font(
+                    name=self.config.body_font_name,
+                    size=self.config.body_font_size,
+                    bold=True
+                )
+                cell.alignment = wrap_align
+                cell.border = thin_border
 
+            row_idx += 1
 
-            # Visit type
-            visit_cell = ws.cell(row=current_row, column=2)
-            visit_cell.value = info["visit_type"]
-            visit_cell.font = Font(name="Calibri", size=10, italic=True)
-            visit_cell.fill = self.styles.CUSTOMER_FILL
-            visit_cell.alignment = self.styles.CENTER_ALIGN
-            visit_cell.border = self.styles.THIN_BORDER
-
-            # Time spent
-            time_cell = ws.cell(row=current_row, column=3)
-            time_cell.value = info["time_spent"]
-            time_cell.font = Font(name="Calibri", size=10)
-            time_cell.fill = self.styles.CUSTOMER_FILL
-            time_cell.alignment = self.styles.CENTER_ALIGN
-            time_cell.border = self.styles.THIN_BORDER
-
-            # Empty cells for alignment
-            for col in range(4, 7):
-                cell = ws.cell(row=current_row, column=col)
-                cell.fill = self.styles.CUSTOMER_FILL
-                cell.border = self.styles.THIN_BORDER
-
-            current_row += 1
-
-            # Get order items
-            all_items = []
-            for order_id in info["orders"]:
-                try:
-                    details = get_order_details(self.config.access_token, order_id)
-                    all_items.extend(details.get("entries", []))
-                except Exception as e:
-                    logger.error(f"Error fetching order {order_id}: {e}")
+            # Fetch and add order items
+            all_items = self._fetch_order_items(info["orders"], rep)
 
             if all_items:
-                # Product header row
-                for col_idx, col_info in enumerate(self.styles.REP_COLUMNS, start=1):
-                    header_cell = ws.cell(row=current_row, column=col_idx)
-                    header_cell.value = col_info["name"]
-                    header_cell.font = self.styles.PRODUCT_HEADER_FONT
-                    header_cell.fill = self.styles.PRODUCT_HEADER_FILL
-                    header_cell.alignment = self.styles.CENTER_ALIGN
-                    header_cell.border = self.styles.THIN_BORDER
-                current_row += 1
+                # Product table header row
+                ws.cell(row=row_idx, column=1, value="Product ID")
+                ws.cell(row=row_idx, column=2, value="Product Description")
+                ws.cell(row=row_idx, column=3, value="")
+                ws.cell(row=row_idx, column=4, value="Sold Qty")
+                ws.cell(row=row_idx, column=5, value="Unit Cost")
+                ws.cell(row=row_idx, column=6, value="Order Value")
+                ws.cell(row=row_idx, column=7, value="")
 
-                # Product rows
+                # Style product header with Times New Roman font, wrap text, and borders
+                for col_idx in range(1, 8):
+                    cell = ws.cell(row=row_idx, column=col_idx)
+                    cell.fill = self.product_header_fill
+                    cell.font = Font(
+                        name=self.config.body_font_name,
+                        size=self.config.body_font_size,
+                        bold=True,
+                        color="FFFFFF"
+                    )
+                    cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+                    cell.border = thin_border
+
+                row_idx += 1
+
+                # Add product rows with Times New Roman font, wrap text, and borders
                 for item in all_items:
                     qty = float(item.get("sold_qty", 0))
                     cost = float(item.get("unit_cost", 0))
-                    order_value = qty * cost
 
-                    # Product ID
-                    prod_cell = ws.cell(row=current_row, column=1)
-                    prod_cell.value = item.get("product_id", "")
-                    prod_cell.font = self.styles.BODY_FONT
-                    prod_cell.alignment = self.styles.LEFT_ALIGN
-                    prod_cell.border = self.styles.THIN_BORDER
+                    # Clean product description - remove "ID - " prefix
+                    product_desc = item.get("product_desc", "")
+                    product_id = str(item.get("product_id", ""))
 
-                    # Empty cells
-                    for col in [2, 3]:
-                        cell = ws.cell(row=current_row, column=col)
-                        cell.value = ""
-                        cell.border = self.styles.THIN_BORDER
+                    # Remove product ID prefix if it exists
+                    if product_desc and product_id:
+                        prefix = f"{product_id} - "
+                        if product_desc.startswith(prefix):
+                            product_desc = product_desc[len(prefix):]
 
-                    # Quantity
-                    qty_cell = ws.cell(row=current_row, column=4)
-                    qty_cell.value = qty
-                    qty_cell.font = self.styles.BODY_FONT
-                    qty_cell.alignment = self.styles.CENTER_ALIGN
-                    qty_cell.border = self.styles.THIN_BORDER
-                    qty_cell.number_format = '#,##0.00'
+                    ws.cell(row=row_idx, column=1, value=product_id)
+                    ws.cell(row=row_idx, column=2, value=product_desc)
+                    ws.cell(row=row_idx, column=3, value="")
+                    ws.cell(row=row_idx, column=4, value=qty)
+                    ws.cell(row=row_idx, column=5, value=cost)
+                    ws.cell(row=row_idx, column=6, value=f"{qty * cost:,.2f}")
+                    ws.cell(row=row_idx, column=7, value="")
 
-                    # Unit Cost
-                    cost_cell = ws.cell(row=current_row, column=5)
-                    cost_cell.value = cost
-                    cost_cell.font = self.styles.BODY_FONT
-                    cost_cell.alignment = self.styles.RIGHT_ALIGN
-                    cost_cell.border = self.styles.THIN_BORDER
-                    cost_cell.number_format = '#,##0.00'
+                    # Apply Times New Roman font, wrap text, and borders to product rows
+                    for col_idx in range(1, 8):
+                        cell = ws.cell(row=row_idx, column=col_idx)
+                        cell.font = Font(
+                            name=self.config.body_font_name,
+                            size=self.config.body_font_size
+                        )
+                        cell.alignment = wrap_align
+                        cell.border = thin_border
 
-                    # Order Value
-                    value_cell = ws.cell(row=current_row, column=6)
-                    value_cell.value = order_value
-                    value_cell.font = self.styles.BODY_FONT
-                    value_cell.alignment = self.styles.RIGHT_ALIGN
-                    value_cell.border = self.styles.THIN_BORDER
-                    value_cell.number_format = '#,##0.00'
-
-                    current_row += 1
+                    row_idx += 1
             else:
-                # No orders row
-                ws.merge_cells(f'A{current_row}:F{current_row}')
-                no_order_cell = ws.cell(row=current_row, column=1)
-                no_order_cell.value = "No orders for this customer"
-                no_order_cell.font = self.styles.ERROR_FONT
-                no_order_cell.fill = self.styles.NO_ORDER_FILL
-                no_order_cell.alignment = self.styles.CENTER_ALIGN
-                no_order_cell.border = self.styles.THIN_BORDER
-                current_row += 1
+                # No orders - set value FIRST, then merge
+                no_orders_cell = ws.cell(row=row_idx, column=1)
+                no_orders_cell.value = "No orders"
+                no_orders_cell.font = Font(
+                    name=self.config.body_font_name,
+                    size=self.config.body_font_size,
+                    color=self.config.error_color,
+                    bold=True
+                )
+                no_orders_cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+                no_orders_cell.border = thin_border
 
-            # Add spacing between customers
-            current_row += 1
+                # Apply borders to all cells before merging
+                for col_idx in range(1, 8):
+                    cell = ws.cell(row=row_idx, column=col_idx)
+                    cell.border = thin_border
 
-        # Freeze panes at row 3 (after title and blank row)
-        ws.freeze_panes = ws['A3']
+                # Now merge cells
+                ws.merge_cells(
+                    start_row=row_idx,
+                    start_column=1,
+                    end_row=row_idx,
+                    end_column=7
+                )
+
+                row_idx += 1
+
+            # Empty separator row - add borders to maintain grid
+            for col_idx in range(1, 8):
+                cell = ws.cell(row=row_idx, column=col_idx)
+                cell.border = thin_border
+
+            row_idx += 1
+
+    def _fetch_order_items(self, order_ids: List[int], rep: str) -> List[Dict]:
+        """Fetch items for all order IDs."""
+        all_items = []
+
+        for order_id in order_ids:
+            try:
+                details = get_order_details(self.access_token, order_id)
+                all_items.extend(details.get("entries", []))
+            except Exception as e:
+                logger.error(f"Error fetching order {order_id} for {rep}: {e}")
+                # Don't add error rows - just log and continue
+
+        return all_items
+
+    def _adjust_column_widths_and_heights(self, ws: Worksheet) -> None:
+        """Set wider column widths and calculate row heights for rep sheet."""
+        column_widths = {
+            1: 45,  # Column A: Customer Name with visit type (wider)
+            2: 40,  # Column B: Time Spent / Product Description (wider for long descriptions)
+            3: 20,  # Column C: Extra space
+            4: 15,  # Column D: Sold Qty
+            5: 15,  # Column E: Unit Cost
+            6: 18,  # Column F: Order Value
+            7: 10,  # Column G: Empty column
+        }
+
+        # Set column widths
+        for col_idx, width in column_widths.items():
+            col_letter = get_column_letter(col_idx)
+            ws.column_dimensions[col_letter].width = width
+
+        # Calculate and set row heights for all rows
+        styler = ExcelStyler(self.config)
+        for row_idx in range(1, ws.max_row + 1):
+            max_height = 18  # Default minimum height (increased from 15)
+
+            for col_idx in range(1, 8):  # We have 7 columns
+                cell = ws.cell(row=row_idx, column=col_idx)
+                cell_value = cell.value
+
+                # Skip empty cells
+                if cell_value is None or (isinstance(cell_value, str) and not cell_value.strip()):
+                    continue
+
+                # Get column width for this column
+                col_width = column_widths.get(col_idx, 20)
+
+                # Calculate required height
+                try:
+                    height = styler.calculate_row_height(cell_value, col_width, self.config.body_font_size)
+                    max_height = max(max_height, height)
+                except Exception as e:
+                    logger.warning(f"Could not calculate height for row {row_idx}, col {col_idx}: {e}")
+                    max_height = max(max_height, 35)  # Fallback to larger height
+
+            # Set the row height with extra padding for readability
+            ws.row_dimensions[row_idx].height = max_height
 
 
 # ============================================================================
 # MAIN REPORT GENERATOR
 # ============================================================================
 
-def generate_detailed_report(visits_data: List[Dict], orders_data: List[Dict],
-                            config: Optional[ReportConfig] = None) -> pd.DataFrame:
+def generate_detailed_report(
+    visits_data: List[Dict],
+    orders_data: List[Dict],
+    config: ReportConfig = None
+) -> None:
     """
-    Generate detailed CSFA report.
+    Generate detailed CSFA report with visits and orders.
 
     Args:
-        visits_data: List of visit dictionaries
-        orders_data: List of order dictionaries
-        config: Report configuration (optional)
-
-    Returns:
-        DataFrame containing summary data
+        visits_data: List of visit records
+        orders_data: List of order records
+        config: Optional configuration object
     """
     if config is None:
         config = ReportConfig.from_env()
 
-    logger.info(f"📊 Generating report: {config.output_file}")
+    access_token = os.getenv("ACCESS_TOKEN")
+    if not access_token:
+        raise ValueError("ACCESS_TOKEN not found in environment variables")
 
-    # Remove old file if exists
+    logger.info(f"🚀 Starting report generation: {config.output_file}")
+
+    # Remove old file
     if os.path.exists(config.output_file):
         os.remove(config.output_file)
-        logger.info(f"🗑️  Removed old file: {config.output_file}")
+        logger.info(f"Removed old file: {config.output_file}")
+
+    # Initialize processors
+    processor = DataProcessor()
+    styler = ExcelStyler(config)
+    summary_gen = SummaryGenerator()
+    rep_gen = RepSheetGenerator(access_token, config)
 
     # Process data
-    logger.info("🔄 Processing data...")
-    processor = DataProcessor()
+    logger.info("📊 Processing data...")
     df_visits = processor.clean_visits(visits_data)
     df_orders = processor.clean_orders(orders_data)
-    df_final = processor.merge_data(df_visits, df_orders)
-    df_called = processor.find_called_customers(df_visits, df_orders)
+    df_final = processor.merge_visits_orders(df_visits, df_orders)
+    df_called = processor.get_called_customers(df_visits, df_orders)
+    reps = processor.get_sales_reps(df_final, df_called)
 
-    # Get all sales reps
-    reps = sorted(set(df_final["sales_rep_final"].dropna()).union(df_called["sales_rep"].dropna()))
-    logger.info(f"👥 Found {len(reps)} sales representatives")
+    logger.info(f"Found {len(reps)} sales representatives")
 
-    # Generate Excel
-    logger.info("📝 Writing Excel file...")
-    generator = ExcelGenerator(config)
+    # Generate summary
+    df_summary = summary_gen.generate_summary(reps, df_final, df_called)
 
+    # Create Excel file
+    logger.info("📝 Creating Excel file...")
     with pd.ExcelWriter(config.output_file, engine="openpyxl") as writer:
-        # Create summary sheet
-        df_summary = generator.create_summary_sheet(writer, df_final, df_called, reps)
+        # Write summary sheet with special styling
+        df_summary.to_excel(writer, index=False, sheet_name="Summary")
+        ws = writer.sheets["Summary"]
+        styler.apply_summary_styling(ws)  # Use summary-specific styling
+        styler.format_money_columns(ws, [2, 4])  # Order value columns
 
-        # Create individual rep sheets
-        for idx, rep in enumerate(reps, 1):
-            logger.info(f"  [{idx}/{len(reps)}] Creating sheet for: {rep}")
-            generator.create_rep_sheet(writer, rep, df_final, df_called, orders_data)
+        # Write individual rep sheets
+        for rep in reps:
+            rep_gen.create_rep_sheet(writer, rep, df_final, df_called, orders_data)
 
-    logger.info(f"✅ Report generated: {config.output_file}")
+    # Export summary files
+    summary_gen.export_summary_text(df_summary, config.summary_text_file)
+    summary_gen.export_summary_image(df_summary, config.summary_image_file)
 
-    return df_summary
+    logger.info(f"✅ Report generation complete: {config.output_file}")
+
+
+# ============================================================================
+# EXAMPLE USAGE
+# ============================================================================
+
+if __name__ == "__main__":
+    # This allows testing the module independently
+    logger.info("Report generator module loaded successfully")

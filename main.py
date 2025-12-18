@@ -94,17 +94,17 @@ class Config:
         if missing:
             raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
 
+
     @classmethod
     def get_dates(cls) -> Tuple[str, str, str]:
         """
         Get dates for report.
         Returns: (order_date, order_date_range, display_date)
         """
-        # Use yesterday by default for business reports
-        yesterday = datetime.now() - timedelta(days=1)
-        date_str = yesterday.strftime("%Y-%m-%d")
+        today = datetime.now()
+        date_str = today.strftime("%Y-%m-%d")
 
-        order_date = cls.ORDER_DATE or yesterday.strftime("%a+%b+%d+%Y")
+        order_date = cls.ORDER_DATE or today.strftime("%a+%b+%d+%Y")
         order_date_range = cls.ORDER_DATE_RANGE or f"{date_str} - {date_str}"
         display_date = date_str
 
