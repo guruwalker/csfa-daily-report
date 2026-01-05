@@ -1,11 +1,14 @@
 """
 CSFA Report Automation - Unified Main Script
 Orchestrates data fetching, report generation, and email sending.
+Automatically runs at 7pm on weekdays (Monday-Friday).
 """
 
 import os
 import sys
 import logging
+import time
+import schedule
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple
 from dotenv import load_dotenv
@@ -86,6 +89,10 @@ class Config:
     # Email config
     SEND_EMAIL = os.getenv("SEND_EMAIL", "true").lower() == "true"
 
+    # Scheduling config
+    RUN_MODE = os.getenv("RUN_MODE", "scheduled")  # "scheduled" or "once"
+    REPORT_TIME = os.getenv("REPORT_TIME", "19:00")  # 7pm in 24-hour format
+
     @classmethod
     def validate(cls) -> None:
         """Validate that all required config is present."""
@@ -94,17 +101,16 @@ class Config:
         if missing:
             raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
 
-
     @classmethod
     def get_dates(cls) -> Tuple[str, str, str]:
         """
         Get dates for report.
         Returns: (order_date, order_date_range, display_date)
         """
-        today = datetime.now()
-        date_str = today.strftime("%Y-%m-%d")
+        yesterday = datetime.now()
+        date_str = yesterday.strftime("%Y-%m-%d")
 
-        order_date = cls.ORDER_DATE or today.strftime("%a+%b+%d+%Y")
+        order_date = cls.ORDER_DATE or yesterday.strftime("%a+%b+%d+%Y")
         order_date_range = cls.ORDER_DATE_RANGE or f"{date_str} - {date_str}"
         display_date = date_str
 
@@ -307,6 +313,62 @@ def generate_and_send_report() -> bool:
         return False
 
 
+def is_weekday() -> bool:
+    """Check if today is a weekday (Monday-Friday)."""
+    return datetime.now().weekday() < 5  # 0=Monday, 4=Friday
+
+
+def scheduled_job() -> None:
+    """Job that runs on schedule - only executes on weekdays."""
+    current_time = datetime.now()
+    day_name = current_time.strftime("%A")
+
+    if is_weekday():
+        logger.info(f"\n🕐 Scheduled job triggered on {day_name} at {current_time.strftime('%H:%M:%S')}")
+        logger.info("=" * 70)
+        logger.info("CSFA REPORT AUTOMATION - SCHEDULED RUN")
+        logger.info("=" * 70)
+
+        generate_and_send_report()
+    else:
+        logger.info(f"⏭️  Skipping report generation - {day_name} is not a weekday")
+
+
+def run_scheduler() -> None:
+    """Set up and run the scheduler for weekday reports at 7pm."""
+    report_time = Config.REPORT_TIME
+
+    logger.info("\n" + "=" * 70)
+    logger.info("CSFA REPORT AUTOMATION - SCHEDULER MODE")
+    logger.info("=" * 70)
+    logger.info(f"📅 Schedule: Monday-Friday at {report_time}")
+    logger.info(f"⏰ Current time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info("=" * 70)
+
+    # Schedule for each weekday
+    schedule.every().monday.at(report_time).do(scheduled_job)
+    schedule.every().tuesday.at(report_time).do(scheduled_job)
+    schedule.every().wednesday.at(report_time).do(scheduled_job)
+    schedule.every().thursday.at(report_time).do(scheduled_job)
+    schedule.every().friday.at(report_time).do(scheduled_job)
+
+    logger.info("\n✅ Scheduler started. Waiting for scheduled times...")
+    logger.info("💡 Press Ctrl+C to stop the scheduler\n")
+
+    # Show next scheduled run
+    next_run = schedule.next_run()
+    if next_run:
+        logger.info(f"📌 Next scheduled run: {next_run.strftime('%A, %Y-%m-%d at %H:%M:%S')}\n")
+
+    # Keep the scheduler running
+    try:
+        while True:
+            schedule.run_pending()
+            time.sleep(60)  # Check every minute
+    except KeyboardInterrupt:
+        logger.info("\n⚠️ Scheduler stopped by user")
+
+
 def main() -> int:
     """
     Main entry point.
@@ -314,15 +376,29 @@ def main() -> int:
     Returns:
         Exit code (0 for success, 1 for failure)
     """
-    logger.info("\n" + "=" * 70)
-    logger.info("CSFA REPORT AUTOMATION")
-    logger.info("=" * 70)
-    logger.info(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    logger.info("=" * 70 + "\n")
-
     try:
-        success = generate_and_send_report()
-        return 0 if success else 1
+        run_mode = Config.RUN_MODE.lower()
+
+        if run_mode == "once":
+            # Run once immediately
+            logger.info("\n" + "=" * 70)
+            logger.info("CSFA REPORT AUTOMATION - SINGLE RUN MODE")
+            logger.info("=" * 70)
+            logger.info(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            logger.info("=" * 70 + "\n")
+
+            success = generate_and_send_report()
+            return 0 if success else 1
+
+        elif run_mode == "scheduled":
+            # Run in scheduler mode
+            run_scheduler()
+            return 0
+
+        else:
+            logger.error(f"❌ Invalid RUN_MODE: {run_mode}. Must be 'once' or 'scheduled'")
+            return 1
+
     except KeyboardInterrupt:
         logger.warning("\n⚠️ Process interrupted by user")
         return 130  # Standard exit code for SIGINT
