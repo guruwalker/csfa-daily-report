@@ -1,6 +1,5 @@
 certifi==2025.11.12
 charset-normalizer==3.4.4
-dotenv==0.9.9
 et_xmlfile==2.0.0
 idna==3.11
 numpy==2.3.5
