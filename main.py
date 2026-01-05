@@ -107,10 +107,10 @@ class Config:
         Get dates for report.
         Returns: (order_date, order_date_range, display_date)
         """
-        yesterday = datetime.now()
-        date_str = yesterday.strftime("%Y-%m-%d")
+        today = datetime.now()  # Changed from yesterday to today
+        date_str = today.strftime("%Y-%m-%d")
 
-        order_date = cls.ORDER_DATE or yesterday.strftime("%a+%b+%d+%Y")
+        order_date = cls.ORDER_DATE or today.strftime("%a+%b+%d+%Y")
         order_date_range = cls.ORDER_DATE_RANGE or f"{date_str} - {date_str}"
         display_date = date_str
 
