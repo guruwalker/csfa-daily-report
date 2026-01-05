@@ -1,58 +1,61 @@
-name: Weekday CSFA Report (7pm)
+name: Daily CSFA Report
 
 on:
+  # Run at 7 PM East Africa Time (4 PM UTC) on weekdays
   schedule:
-    # Runs Monday-Friday at 7pm Kenya time (16:00 UTC = 7pm EAT)
-    - cron: "0 16 * * 1-5"
+    - cron: '0 16 * * 1-5'  # Mon-Fri at 4 PM UTC (7 PM EAT)
 
-  workflow_dispatch:  # Allows manual testing
+  # Allow manual trigger
+  workflow_dispatch:
     inputs:
-      run_mode:
-        description: 'Run mode (once or scheduled)'
+      send_email:
+        description: 'Send email report?'
         required: false
-        default: 'once'
+        default: 'true'
         type: choice
         options:
-          - once
-          - scheduled
-      test_date:
-        description: 'Optional: Test with specific date (YYYY-MM-DD)'
-        required: false
-        type: string
+          - 'true'
+          - 'false'
 
 jobs:
-  run-report:
+  generate-report:
     runs-on: ubuntu-latest
 
-    # Only run on weekdays (extra safety check)
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.event.schedule == '0 16 * * 1-5')
-
     steps:
-      - name: Checkout repository
+      - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: '3.11'
+
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Verify it's a weekday
-        run: |
-          day=$(date +%u)
-          if [ $day -ge 6 ]; then
-            echo "⏭️  Today is a weekend (day $day), skipping report"
-            exit 0
-          fi
-          echo "✅ Today is a weekday (day $day), proceeding with report"
-
-      - name: Run CSFA Report
+      - name: Run token diagnostic (debug only)
+        if: runner.debug == '1'
         env:
-          # Authentication tokens
+          ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
+          LARAVEL_TOKEN: ${{ secrets.LARAVEL_TOKEN }}
+          SAT_SESSION: ${{ secrets.SAT_SESSION }}
+          XSRF_TOKEN: ${{ secrets.XSRF_TOKEN }}
+        run: |
+          python token_diagnostic.py
+
+      - name: Generate CSFA Report
+        env:
+          # API Authentication
           ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
           LARAVEL_TOKEN: ${{ secrets.LARAVEL_TOKEN }}
           SAT_SESSION: ${{ secrets.SAT_SESSION }}
@@ -60,40 +63,43 @@ jobs:
           SAT_USER_ID: ${{ secrets.SAT_USER_ID }}
 
           # API Configuration
-          HOST: ${{ secrets.HOST }}
-          COUNTRY_ID: ${{ secrets.COUNTRY_ID }}
+          HOST: tintasberger.solutechlabs.com
+          COUNTRY_ID: 149
 
-          # Report files
-          OUTPUT_FILE: Daily_CSFA_Report.xlsx
-          SUMMARY_TEXT_FILE: summary_for_email.txt
-          SUMMARY_IMAGE_FILE: summary_sheet.png
-
-          # Email configuration
-          SEND_EMAIL: 'true'
-          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
-          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
-          EMAIL_TO: ${{ secrets.EMAIL_TO }}
-          # EMAIL_CC: ${{ secrets.EMAIL_CC }}
+          # Email Configuration
           SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          SENDER_NAME: ${{ secrets.SENDER_NAME }}
+          RECIPIENT_NAME: ${{ secrets.RECIPIENT_NAME }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          EMAIL_CC: ${{ secrets.EMAIL_CC }}
+          EMAIL_SUBJECT: "Tintas Berger CSFA Report - {date}"
 
-          # Execution mode
-          RUN_MODE: ${{ inputs.run_mode || 'once' }}
-
-          # Optional test date
-          ORDER_DATE: ${{ inputs.test_date }}
+          # Report Configuration
+          REPORT_CURRENCY: MZN
+          OUTPUT_FILE: Daily_CSFA_Report.xlsx
+          SEND_EMAIL: ${{ github.event.inputs.send_email || 'true' }}
 
           # Logging
           LOG_LEVEL: INFO
           LOG_FILE: report_generation.log
+
+          # Execution Mode
+          RUN_MODE: once
         run: |
-          echo "🚀 Starting CSFA Report Generation"
-          echo "📅 Date: $(date)"
-          echo "🕐 Time: $(date +%H:%M:%S)"
-          echo "🌍 Timezone: $(date +%Z)"
+          echo "🚀 Starting CSFA report generation..."
           python main.py
 
-      - name: Upload report artifact
+          if [ $? -eq 0 ]; then
+            echo "✅ Report generation successful!"
+          else
+            echo "❌ Report generation failed!"
+            exit 1
+          fi
+
+      - name: Upload Report Artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -101,13 +107,21 @@ jobs:
           path: |
             Daily_CSFA_Report.xlsx
             summary_for_email.txt
-            summary_sheet.png
             report_generation.log
           retention-days: 30
 
-      - name: Notify on failure
+      - name: Upload Logs on Failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: error-logs-${{ github.run_number }}
+          path: |
+            report_generation.log
+            *.log
+          retention-days: 7
+
+      - name: Send Failure Notification
         if: failure()
         run: |
           echo "❌ Report generation failed!"
           echo "Check the logs above for details"
-          cat report_generation.log || echo "No log file found"
