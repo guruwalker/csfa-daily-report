@@ -367,6 +367,194 @@ class EmailSender:
 
 
 # ============================================================================
+# CUSTOMER DETAILS TABLE BUILDER
+# ============================================================================
+
+def _build_customer_details_table(excel_file: str, df_summary: pd.DataFrame) -> pd.DataFrame:
+    """
+    Build a customer details table by reading all rep sheets.
+    Format: Salesperson, Customer Name, Interaction, Time Spent, Order Value
+    """
+    from openpyxl import load_workbook
+
+    customer_rows = []
+
+    try:
+        # Load the Excel file
+        wb = load_workbook(excel_file, data_only=True)
+
+        # Get all salesperson names from summary
+        salespersons = df_summary["SALESPERSON"].tolist()
+
+        for rep in salespersons:
+            # Clean sheet name (same logic as in report generation)
+            sheet_name = rep.replace(".", "_").replace(" ", "_")[:31]
+
+            if sheet_name not in wb.sheetnames:
+                continue
+
+            ws = wb[sheet_name]
+
+            # Parse the sheet to extract customer information
+            current_customer = None
+            current_interaction = None
+            current_time_spent = None
+            customer_order_value = 0.0
+
+            for row_idx in range(1, ws.max_row + 1):
+                # Read first two columns
+                col_a = ws.cell(row=row_idx, column=1).value
+                col_b = ws.cell(row=row_idx, column=2).value
+
+                if not col_a:
+                    continue
+
+                col_a_str = str(col_a).strip()
+                col_b_str = str(col_b).strip() if col_b else ""
+
+                # Check if this is a customer header row
+                # Customer rows have format: "Customer Name (visited)" or "Customer Name (called)"
+                if "(" in col_a_str and col_a_str.endswith(")"):
+                    # Save previous customer if exists
+                    if current_customer:
+                        customer_rows.append({
+                            "Salesperson": rep,
+                            "Customer Name": current_customer,
+                            "Interaction": current_interaction,
+                            "Time Spent": current_time_spent or "-",
+                            "Order Value": customer_order_value
+                        })
+
+                    # Parse new customer
+                    # Extract customer name and interaction type
+                    if "(visited & called)" in col_a_str.lower():
+                        current_customer = col_a_str.rsplit("(", 1)[0].strip()
+                        current_interaction = "Visited & Called"
+                    elif "(visited)" in col_a_str.lower():
+                        current_customer = col_a_str.rsplit("(", 1)[0].strip()
+                        current_interaction = "Visited"
+                    elif "(called)" in col_a_str.lower():
+                        current_customer = col_a_str.rsplit("(", 1)[0].strip()
+                        current_interaction = "Called"
+                    else:
+                        current_customer = col_a_str
+                        current_interaction = "Unknown"
+
+                    # Extract time spent from column B
+                    if col_b_str.startswith("Time Spent:"):
+                        current_time_spent = col_b_str.replace("Time Spent:", "").strip()
+                    else:
+                        current_time_spent = None
+
+                    # Reset order value for new customer
+                    customer_order_value = 0.0
+
+                # Check if this is an order value row (has numeric value in column F)
+                elif col_a_str and col_a_str != "Product ID" and col_a_str != "No orders":
+                    # Try to get order value from column F (column 6)
+                    order_val_cell = ws.cell(row=row_idx, column=6).value
+                    if order_val_cell:
+                        try:
+                            # Remove commas and convert to float
+                            order_val_str = str(order_val_cell).replace(",", "")
+                            order_val = float(order_val_str)
+                            customer_order_value += order_val
+                        except (ValueError, AttributeError):
+                            pass
+
+            # Don't forget the last customer
+            if current_customer:
+                customer_rows.append({
+                    "Salesperson": rep,
+                    "Customer Name": current_customer,
+                    "Interaction": current_interaction,
+                    "Time Spent": current_time_spent or "-",
+                    "Order Value": customer_order_value
+                })
+
+        wb.close()
+
+    except Exception as e:
+        logger.error(f"Error building customer details table: {e}", exc_info=True)
+
+    # Create DataFrame
+    df = pd.DataFrame(customer_rows)
+
+    # Sort by Salesperson, then Customer Name
+    if not df.empty:
+        df = df.sort_values(by=["Salesperson", "Customer Name"])
+
+    return df
+
+
+def _generate_customer_details_table(df: pd.DataFrame) -> str:
+    """Generate HTML table for customer details."""
+    if df.empty:
+        return "<p><em>No customer interaction data available</em></p>"
+
+    # Get currency from environment
+    currency = os.getenv("REPORT_CURRENCY", "MZN")
+
+    # Define styles
+    header_style = (
+        "background-color: #4F81BD; "
+        "color: #FFFFFF; "
+        "font-weight: bold; "
+        "padding: 12px; "
+        "text-align: left; "
+        "border: 1px solid #2F5F8D; "
+        "font-family: Arial, sans-serif;"
+    )
+
+    cell_style = (
+        "padding: 10px; "
+        "border: 1px solid #ddd; "
+        "text-align: left; "
+        "font-family: Arial, sans-serif; "
+        "color: #333333;"
+    )
+
+    table_style = (
+        "border-collapse: collapse; "
+        "width: 100%; "
+        "margin: 20px 0; "
+        "box-shadow: 0 2px 4px rgba(0,0,0,0.1);"
+    )
+
+    # Format order values
+    df_formatted = df.copy()
+    df_formatted["Order Value"] = df_formatted["Order Value"].apply(
+        lambda x: f"{currency} {x:,.2f}" if pd.notnull(x) and x > 0 else "-"
+    )
+
+    # Build HTML
+    html = f'<table style="{table_style}">'
+
+    # Header
+    html += '<thead><tr>'
+    for col in df_formatted.columns:
+        html += f'<th style="{header_style}">{col}</th>'
+    html += '</tr></thead>'
+
+    # Body with alternating colors
+    html += '<tbody>'
+    for idx, row in df_formatted.iterrows():
+        row_style = "background-color: #f9f9f9;" if idx % 2 == 1 else ""
+        html += f'<tr style="{row_style}">'
+        for col in df_formatted.columns:
+            value = row[col]
+            # Right-align order value
+            align = "right" if col == "Order Value" else "left"
+            style = cell_style + f" text-align: {align};"
+            html += f'<td style="{style}">{value}</td>'
+        html += '</tr>'
+    html += '</tbody>'
+    html += '</table>'
+
+    return html
+
+
+# ============================================================================
 # MAIN REPORT SENDER
 # ============================================================================
 
@@ -412,20 +600,30 @@ def send_report(
             logger.error(f"❌ Failed to read Excel file: {e}")
             return False
 
+        # Read all individual rep sheets to build customer detail table
+        logger.info(f"📖 Reading individual rep sheets for customer details...")
+        df_customer_details = _build_customer_details_table(excel_file, df_summary)
+
         # Generate KPI section
         logger.info("📈 Calculating KPIs...")
         kpi_html = _generate_kpi_section(df_summary)
 
-        # Generate detailed performance table
-        logger.info("🎨 Generating performance table...")
+        # Generate summary table
+        logger.info("🎨 Generating summary table...")
         html_generator = HTMLTableGenerator()
-        performance_html = html_generator.generate(df_summary, format_money=True)
+        summary_html_table = html_generator.generate(df_summary, format_money=True)
+
+        # Generate customer details table
+        logger.info("🎨 Generating customer details table...")
+        customer_details_html = _generate_customer_details_table(df_customer_details)
 
         # Combine sections
         summary_html = f"""
         {kpi_html}
-        <h3 style="color: #4F81BD; margin-top: 30px;">Detailed Performance by Salesperson</h3>
-        {performance_html}
+        <h3 style="color: #4F81BD; margin-top: 30px;">Summary by Salesperson</h3>
+        {summary_html_table}
+        <h3 style="color: #4F81BD; margin-top: 30px;">All Customer Interactions</h3>
+        {customer_details_html}
         """
 
         # Save HTML preview (optional, for debugging)

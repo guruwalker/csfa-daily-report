@@ -1,13 +1,14 @@
 """
 API Client for CSFA Report Automation
 Handles all API interactions with proper error handling and validation.
+Python 3.9+ compatible version.
 """
 
 import requests
 import os
 import logging
 from dotenv import load_dotenv
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Union
 
 # Load .env file
 load_dotenv()
@@ -181,13 +182,13 @@ def get_timesheet(headers: dict, cookies: dict, params: dict) -> Dict[str, Any]:
         raise
 
 
-def get_order_details(access_token: str, order_number: int | str) -> Dict[str, Any]:
+def get_order_details(access_token: str, order_number: Union[int, str]) -> Dict[str, Any]:
     """
     Fetch details for a single order by order number.
 
     Args:
         access_token: API bearer token
-        order_number: Order number to fetch details for
+        order_number: Order number to fetch details for (int or str)
 
     Returns:
         JSON response containing order details
