@@ -111,18 +111,51 @@ class Config:
                     "Verify it's the complete token."
                 )
 
+    # @classmethod
+    # def get_dates(cls) -> Tuple[str, str, str]:
+    #     """
+    #     Get dates for report.
+    #     Returns: (order_date, order_date_range, display_date)
+    #     """
+    #     today = datetime.now()  # Changed from yesterday to today
+    #     date_str = today.strftime("%Y-%m-%d")
+
+    #     order_date = cls.ORDER_DATE or today.strftime("%a+%b+%d+%Y")
+    #     order_date_range = cls.ORDER_DATE_RANGE or f"{date_str} - {date_str}"
+    #     display_date = date_str
+
+    #     return order_date, order_date_range, display_date
     @classmethod
     def get_dates(cls) -> Tuple[str, str, str]:
         """
-        Get dates for report.
+        Get dates for report from environment variables.
         Returns: (order_date, order_date_range, display_date)
-        """
-        today = datetime.now()  # Changed from yesterday to today
-        date_str = today.strftime("%Y-%m-%d")
 
-        order_date = cls.ORDER_DATE or today.strftime("%a+%b+%d+%Y")
-        order_date_range = cls.ORDER_DATE_RANGE or f"{date_str} - {date_str}"
-        display_date = date_str
+        Raises:
+            ValueError: If ORDER_DATE or ORDER_DATE_RANGE is not set
+        """
+        # Require dates to be set in .env
+        if not cls.ORDER_DATE:
+            raise ValueError(
+                "ORDER_DATE not set in environment variables. "
+                "Please set ORDER_DATE in your .env file (e.g., Mon+Dec+15+2025)"
+            )
+
+        if not cls.ORDER_DATE_RANGE:
+            raise ValueError(
+                "ORDER_DATE_RANGE not set in environment variables. "
+                "Please set ORDER_DATE_RANGE in your .env file (e.g., 2025-12-15 - 2025-12-15)"
+            )
+
+        order_date = cls.ORDER_DATE
+        order_date_range = cls.ORDER_DATE_RANGE
+
+        # Extract display date from ORDER_DATE_RANGE (first date)
+        try:
+            display_date = order_date_range.split(" - ")[0].strip()
+        except:
+            # Fallback: try to parse from ORDER_DATE
+            display_date = order_date.replace("+", " ")
 
         return order_date, order_date_range, display_date
 
