@@ -1,0 +1,7 @@
+        SALESPERSON  CUSTOMERS VISITED ORDER VALUE FROM VISITS  CUSTOMERS CALLED ORDER VALUE FROM CALLS       APP USAGE
+     ANDRE MARQUEZA                  5               97,594.00                 2             626,640.00        Used App
+        IMRAN AHMED                  0                    0.00                 0                   0.00 Did not use app
+   INÁCIO RODRIGUES                  8                    0.00                 3             241,375.06        Used App
+   KUMAR CHAMPAKLAL                  0                    0.00                 0                   0.00 Did not use app
+       LAURA MARCIA                  0                    0.00                 0                   0.00 Did not use app
+RICARDO DINIS LANGA                  6               40,356.00                 3             173,392.42        Used App

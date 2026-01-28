@@ -1,6 +1,7 @@
 """
 Refactored CSFA Report Generator
 Generates detailed Excel reports with visits, orders, and product details.
+Filters out test accounts and tracks app usage for all salespeople.
 """
 
 import pandas as pd
@@ -21,6 +22,7 @@ except ImportError:
     logging.warning("dataframe_image not installed. Summary image export disabled.")
 
 from api_client import get_order_details
+from config import is_excluded_account, get_all_salespeople, normalize_name
 
 # Configure logging
 logging.basicConfig(
@@ -72,12 +74,19 @@ class DataProcessor:
 
     @staticmethod
     def clean_visits(visits_data: List[Dict]) -> pd.DataFrame:
-        """Clean and structure visits data."""
+        """Clean and structure visits data, filtering out excluded accounts."""
         visit_rows = []
         for v in visits_data:
+            rep_name = v.get("rep_name", "")
+
+            # Skip excluded accounts
+            if is_excluded_account(rep_name):
+                logger.debug(f"Filtering out excluded visit from: {rep_name}")
+                continue
+
             erp_code = v.get("erp_code") or ""
             visit_rows.append({
-                "sales_rep": v.get("rep_name", ""),
+                "sales_rep": normalize_name(rep_name),
                 "customer_name": (v.get("shop_name") or "").strip(),
                 "erp_code": erp_code.strip() if erp_code else "",
                 "time_spent": v.get("timespent", "")
@@ -86,9 +95,16 @@ class DataProcessor:
 
     @staticmethod
     def clean_orders(orders_data: List[Dict]) -> pd.DataFrame:
-        """Clean and structure orders data."""
+        """Clean and structure orders data, filtering out excluded accounts."""
         order_rows = []
         for o in orders_data:
+            sales_rep = o.get("sales_rep", "")
+
+            # Skip excluded accounts
+            if is_excluded_account(sales_rep):
+                logger.debug(f"Filtering out excluded order from: {sales_rep}")
+                continue
+
             balance_str = o.get("balance", "0").replace(",", "").strip()
             try:
                 balance = float(balance_str)
@@ -96,7 +112,7 @@ class DataProcessor:
                 balance = 0.0
 
             order_rows.append({
-                "sales_rep": o.get("sales_rep", ""),
+                "sales_rep": normalize_name(sales_rep),
                 "customer_name": (o.get("customer_name") or "").strip(),
                 "customer_code": o.get("customer_code", ""),
                 "order_id": o.get("id"),
@@ -162,11 +178,25 @@ class DataProcessor:
         df_final: pd.DataFrame,
         df_called: pd.DataFrame
     ) -> List[str]:
-        """Get sorted list of all sales representatives."""
-        reps = set(df_final["sales_rep_final"].dropna()).union(
+        """
+        Get complete list of all sales representatives.
+        Includes both active reps (from data) and inactive reps (from config).
+        """
+        # Get reps who had activity
+        active_reps = set(df_final["sales_rep_final"].dropna()).union(
             df_called["sales_rep"].dropna()
         )
-        return sorted(reps)
+
+        # Filter out any excluded accounts that might have slipped through
+        active_reps = {rep for rep in active_reps if not is_excluded_account(rep)}
+
+        # Get all configured salespeople
+        all_configured_reps = set(get_all_salespeople())
+
+        # Combine and sort
+        all_reps = active_reps.union(all_configured_reps)
+
+        return sorted(all_reps)
 
 
 # ============================================================================
@@ -282,6 +312,7 @@ class ExcelStyler:
             3: 30,  # ORDER VALUE FROM VISITS
             4: 20,  # CUSTOMERS CALLED
             5: 30,  # ORDER VALUE FROM CALLS
+            6: 20,  # APP USAGE (NEW COLUMN)
         }
 
         for col_idx, width in column_widths.items():
@@ -352,7 +383,10 @@ class SummaryGenerator:
         df_final: pd.DataFrame,
         df_called: pd.DataFrame
     ) -> pd.DataFrame:
-        """Generate summary statistics for each sales rep."""
+        """
+        Generate summary statistics for each sales rep.
+        Shows "Did not use app" for reps with no activity.
+        """
         summary_rows = []
 
         for rep in reps:
@@ -366,12 +400,16 @@ class SummaryGenerator:
             customers_called = rep_calls["customer_called"].nunique()
             order_value_calls = rep_calls["order_value"].sum()
 
+            # Check if rep used the app
+            has_activity = customers_visited > 0 or customers_called > 0
+
             summary_rows.append({
                 "SALESPERSON": rep,
-                "CUSTOMERS VISITED": customers_visited,
-                "ORDER VALUE FROM VISITS": order_value_visits,
-                "CUSTOMERS CALLED": customers_called,
-                "ORDER VALUE FROM CALLS": order_value_calls
+                "CUSTOMERS VISITED": customers_visited if has_activity else 0,
+                "ORDER VALUE FROM VISITS": order_value_visits if has_activity else 0.0,
+                "CUSTOMERS CALLED": customers_called if has_activity else 0,
+                "ORDER VALUE FROM CALLS": order_value_calls if has_activity else 0.0,
+                "APP USAGE": "Used App" if has_activity else "Did not use app"
             })
 
         return pd.DataFrame(summary_rows)
@@ -773,11 +811,16 @@ def generate_detailed_report(
         df_summary.to_excel(writer, index=False, sheet_name="Summary")
         ws = writer.sheets["Summary"]
         styler.apply_summary_styling(ws)  # Use summary-specific styling
-        styler.format_money_columns(ws, [2, 4])  # Order value columns
+        styler.format_money_columns(ws, [2, 4])  # Order value columns (0-indexed: columns 3 and 5)
 
-        # Write individual rep sheets
+        # Write individual rep sheets (only for reps who used the app)
         for rep in reps:
-            rep_gen.create_rep_sheet(writer, rep, df_final, df_called, orders_data)
+            # Check if rep used the app
+            rep_data = df_summary[df_summary["SALESPERSON"] == rep]
+            if not rep_data.empty and rep_data.iloc[0]["APP USAGE"] == "Used App":
+                rep_gen.create_rep_sheet(writer, rep, df_final, df_called, orders_data)
+            else:
+                logger.info(f"  Skipping {rep} (did not use app)")
 
     # Export summary files
     summary_gen.export_summary_text(df_summary, config.summary_text_file)

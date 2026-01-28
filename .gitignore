@@ -3,7 +3,6 @@
 # ============================================================================
 # SENSITIVE FILES - NEVER COMMIT THESE
 # ============================================================================
-.env
 .env.local
 .env.*.local
 *.key
@@ -13,13 +12,13 @@ credentials.json
 # ============================================================================
 # GENERATED REPORTS AND OUTPUTS
 # ============================================================================
-*.xlsx
-*.xls
-Daily_CSFA_Report.xlsx
-summary_for_email.txt
-summary_sheet.png
-summary_email.html
-summary_email_preview.html
+# *.xlsx
+# *.xls
+# Daily_CSFA_Report.xlsx
+# summary_for_email.txt
+# summary_sheet.png
+# summary_email.html
+# summary_email_preview.html
 
 # ============================================================================
 # LOGS

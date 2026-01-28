@@ -38,9 +38,12 @@ class EmailConfig:
     BCC_RECIPIENTS = os.getenv("EMAIL_BCC", "").split(",") if os.getenv("EMAIL_BCC") else []
 
     # Email content
-    EMAIL_SUBJECT_TEMPLATE = os.getenv("EMAIL_SUBJECT", "Tintas Berger CSFA Report - {date}")
+    EMAIL_SUBJECT_TEMPLATE = os.getenv("EMAIL_SUBJECT", "Daily Tintas Berger CSFA Report")
     SENDER_NAME = os.getenv("SENDER_NAME", "Innocent Maina")
     RECIPIENT_NAME = os.getenv("RECIPIENT_NAME", "Mr. Hussein")
+
+    # Threading
+    EMAIL_THREAD_ID = os.getenv("EMAIL_THREAD_ID")
 
     # Files
     EXCEL_FILE = os.getenv("OUTPUT_FILE", "Daily_CSFA_Report.xlsx")
@@ -208,6 +211,28 @@ class EmailBuilder:
         subject = self.config.EMAIL_SUBJECT_TEMPLATE.format(date=date_str)
         msg["Subject"] = subject
 
+        # ========== GENERATE MESSAGE-ID ==========
+        import time
+        import socket
+
+        # Generate unique Message-ID if not threading
+        thread_id = self.config.EMAIL_THREAD_ID
+
+        if not thread_id:
+            # First email - generate a Message-ID
+            timestamp = str(int(time.time() * 1000))
+            hostname = self.config.SENDER_EMAIL.split("@")[1]
+            message_id = f"<csfa-report-{timestamp}@{hostname}>"
+            msg["Message-ID"] = message_id
+            logger.info(f"📧 Generated new Message-ID: {message_id}")
+            logger.info(f"⚠️  SAVE THIS MESSAGE-ID to .env as EMAIL_THREAD_ID for threading!")
+        else:
+            # Reply to existing thread
+            msg["In-Reply-To"] = thread_id
+            msg["References"] = thread_id
+            logger.info(f"📧 Threading email to: {thread_id}")
+        # ==========================================
+
         # Build HTML body
         body = self._build_html_body(summary_html, date_str)
         msg.add_alternative(body, subtype="html")
@@ -222,7 +247,6 @@ class EmailBuilder:
     def _build_html_body(self, summary_html: str, date_str: str) -> str:
         """Build HTML email body."""
         # Parse date to get day name
-        from datetime import datetime
         try:
             date_obj = datetime.strptime(date_str, "%Y-%m-%d")
             day_name = date_obj.strftime("%A")
@@ -267,6 +291,8 @@ class EmailBuilder:
             <div class="footer">
                 <p>Kind regards,<br>
                 <strong>{self.config.SENDER_NAME}</strong></p>
+
+                <p><em>This is an automated report sent at {current_time} on {formatted_date}.</em></p>
             </div>
         </body>
         </html>
@@ -411,7 +437,6 @@ def _build_customer_details_table(excel_file: str, df_summary: pd.DataFrame) -> 
                 col_b_str = str(col_b).strip() if col_b else ""
 
                 # Check if this is a customer header row
-                # Customer rows have format: "Customer Name (visited)" or "Customer Name (called)"
                 if "(" in col_a_str and col_a_str.endswith(")"):
                     # Save previous customer if exists
                     if current_customer:
@@ -424,7 +449,6 @@ def _build_customer_details_table(excel_file: str, df_summary: pd.DataFrame) -> 
                         })
 
                     # Parse new customer
-                    # Extract customer name and interaction type
                     if "(visited & called)" in col_a_str.lower():
                         current_customer = col_a_str.rsplit("(", 1)[0].strip()
                         current_interaction = "Visited & Called"
@@ -447,13 +471,12 @@ def _build_customer_details_table(excel_file: str, df_summary: pd.DataFrame) -> 
                     # Reset order value for new customer
                     customer_order_value = 0.0
 
-                # Check if this is an order value row (has numeric value in column F)
+                # Check if this is an order value row
                 elif col_a_str and col_a_str != "Product ID" and col_a_str != "No orders":
                     # Try to get order value from column F (column 6)
                     order_val_cell = ws.cell(row=row_idx, column=6).value
                     if order_val_cell:
                         try:
-                            # Remove commas and convert to float
                             order_val_str = str(order_val_cell).replace(",", "")
                             order_val = float(order_val_str)
                             customer_order_value += order_val
@@ -550,6 +573,51 @@ def _generate_customer_details_table(df: pd.DataFrame) -> str:
     html += '</table>'
 
     return html
+
+
+def _generate_kpi_section(df_summary: pd.DataFrame) -> str:
+    """Generate KPI summary section with total customers and revenue."""
+    try:
+        # Get currency from environment or default to MZN
+        currency = os.getenv("REPORT_CURRENCY", "MZN")
+
+        # Calculate totals
+        total_customers_visited = df_summary["CUSTOMERS VISITED"].sum()
+        total_customers_called = df_summary["CUSTOMERS CALLED"].sum()
+        total_customers = total_customers_visited + total_customers_called
+
+        total_revenue_visits = df_summary["ORDER VALUE FROM VISITS"].sum()
+        total_revenue_calls = df_summary["ORDER VALUE FROM CALLS"].sum()
+        total_revenue = total_revenue_visits + total_revenue_calls
+
+        # Format numbers
+        total_customers_str = f"{int(total_customers):,}"
+        total_revenue_str = f"{currency} {total_revenue:,.2f}"
+
+        # Generate KPI HTML
+        kpi_html = f"""
+        <div style="margin: 20px 0;">
+            <h3 style="color: #4F81BD; margin-bottom: 15px;">Key Performance Indicators</h3>
+            <table style="border-collapse: collapse; width: 100%; margin-bottom: 20px;">
+                <tr>
+                    <td style="padding: 15px; background-color: #E8F4F8; border: 2px solid #4F81BD; width: 50%; text-align: center;">
+                        <div style="font-size: 14px; color: #666; margin-bottom: 5px;">TOTAL CUSTOMERS (Visited & Called)</div>
+                        <div style="font-size: 28px; font-weight: bold; color: #4F81BD;">{total_customers_str}</div>
+                    </td>
+                    <td style="padding: 15px; background-color: #E8F4F8; border: 2px solid #4F81BD; width: 50%; text-align: center;">
+                        <div style="font-size: 14px; color: #666; margin-bottom: 5px;">TOTAL ORDER REVENUE</div>
+                        <div style="font-size: 28px; font-weight: bold; color: #4F81BD;">{total_revenue_str}</div>
+                    </td>
+                </tr>
+            </table>
+        </div>
+        """
+
+        return kpi_html
+
+    except Exception as e:
+        logger.error(f"Error generating KPI section: {e}")
+        return ""
 
 
 # ============================================================================
@@ -655,51 +723,6 @@ def send_report(
     except Exception as e:
         logger.error(f"❌ Error in send_report: {e}", exc_info=True)
         return False
-
-
-def _generate_kpi_section(df_summary: pd.DataFrame) -> str:
-    """Generate KPI summary section with total customers and revenue."""
-    try:
-        # Get currency from environment or default to MZN
-        currency = os.getenv("REPORT_CURRENCY", "MZN")
-
-        # Calculate totals
-        total_customers_visited = df_summary["CUSTOMERS VISITED"].sum()
-        total_customers_called = df_summary["CUSTOMERS CALLED"].sum()
-        total_customers = total_customers_visited + total_customers_called
-
-        total_revenue_visits = df_summary["ORDER VALUE FROM VISITS"].sum()
-        total_revenue_calls = df_summary["ORDER VALUE FROM CALLS"].sum()
-        total_revenue = total_revenue_visits + total_revenue_calls
-
-        # Format numbers
-        total_customers_str = f"{int(total_customers):,}"
-        total_revenue_str = f"{currency} {total_revenue:,.2f}"
-
-        # Generate KPI HTML
-        kpi_html = f"""
-        <div style="margin: 20px 0;">
-            <h3 style="color: #4F81BD; margin-bottom: 15px;">Key Performance Indicators</h3>
-            <table style="border-collapse: collapse; width: 100%; margin-bottom: 20px;">
-                <tr>
-                    <td style="padding: 15px; background-color: #E8F4F8; border: 2px solid #4F81BD; width: 50%; text-align: center;">
-                        <div style="font-size: 14px; color: #666; margin-bottom: 5px;">TOTAL CUSTOMERS (Visited & Called)</div>
-                        <div style="font-size: 28px; font-weight: bold; color: #4F81BD;">{total_customers_str}</div>
-                    </td>
-                    <td style="padding: 15px; background-color: #E8F4F8; border: 2px solid #4F81BD; width: 50%; text-align: center;">
-                        <div style="font-size: 14px; color: #666; margin-bottom: 5px;">TOTAL ORDER REVENUE</div>
-                        <div style="font-size: 28px; font-weight: bold; color: #4F81BD;">{total_revenue_str}</div>
-                    </td>
-                </tr>
-            </table>
-        </div>
-        """
-
-        return kpi_html
-
-    except Exception as e:
-        logger.error(f"Error generating KPI section: {e}")
-        return ""
 
 
 # ============================================================================
