@@ -373,65 +373,55 @@ class ExcelStyler:
 # ============================================================================
 # SUMMARY GENERATOR
 # ============================================================================
-
 class SummaryGenerator:
     """Generates summary reports."""
 
-    @staticmethod
     def generate_summary(
+        self,
         reps: List[str],
         df_final: pd.DataFrame,
         df_called: pd.DataFrame
     ) -> pd.DataFrame:
-        """
-        Generate summary statistics for each sales rep.
-        Shows "Did not use app" for reps with no activity.
-        """
+        """Generate summary statistics for each sales rep."""
         summary_rows = []
 
         for rep in reps:
             # Visits data
             rep_visits = df_final[df_final["sales_rep_final"] == rep]
             customers_visited = rep_visits["customer_name_final"].nunique()
-            order_value_visits = rep_visits["order_value"].sum()
 
             # Calls data
             rep_calls = df_called[df_called["sales_rep"] == rep]
             customers_called = rep_calls["customer_called"].nunique()
-            order_value_calls = rep_calls["order_value"].sum()
 
-            # Check if rep used the app
-            has_activity = customers_visited > 0 or customers_called > 0
+            # Determine app usage: if they have visits OR calls, they used the app
+            app_usage = "Used App" if (customers_visited > 0 or customers_called > 0) else "Did Not Use App"
 
             summary_rows.append({
                 "SALESPERSON": rep,
-                "CUSTOMERS VISITED": customers_visited if has_activity else 0,
-                "ORDER VALUE FROM VISITS": order_value_visits if has_activity else 0.0,
-                "CUSTOMERS CALLED": customers_called if has_activity else 0,
-                "ORDER VALUE FROM CALLS": order_value_calls if has_activity else 0.0,
-                "APP USAGE": "Used App" if has_activity else "Did not use app"
+                "CUSTOMERS VISITED": customers_visited,
+                "CUSTOMERS CALLED": customers_called,
+                "APP USAGE": app_usage
             })
 
         return pd.DataFrame(summary_rows)
 
-    @staticmethod
-    def export_summary_text(df_summary: pd.DataFrame, filepath: str) -> None:
+    def export_summary_text(self, df_summary: pd.DataFrame, filepath: str) -> None:
         """Export summary as formatted text for email."""
         summary_for_email = df_summary.copy()
 
-        # Format numbers with commas
-        summary_for_email["ORDER VALUE FROM VISITS"] = \
-            summary_for_email["ORDER VALUE FROM VISITS"].map("{:,.2f}".format)
-        summary_for_email["ORDER VALUE FROM CALLS"] = \
-            summary_for_email["ORDER VALUE FROM CALLS"].map("{:,.2f}".format)
+        # Format numbers with commas for customer counts
+        summary_for_email["CUSTOMERS VISITED"] = \
+            summary_for_email["CUSTOMERS VISITED"].map(lambda x: f"{int(x):,}")
+        summary_for_email["CUSTOMERS CALLED"] = \
+            summary_for_email["CUSTOMERS CALLED"].map(lambda x: f"{int(x):,}")
 
         with open(filepath, "w") as f:
             f.write(summary_for_email.to_string(index=False))
 
         logger.info(f"✅ Summary text saved: {filepath}")
 
-    @staticmethod
-    def export_summary_image(df_summary: pd.DataFrame, filepath: str) -> None:
+    def export_summary_image(self, df_summary: pd.DataFrame, filepath: str) -> None:
         """Export summary as image (optional)."""
         if not HAS_DFI:
             logger.warning("dataframe_image not available, skipping image export")
@@ -442,8 +432,6 @@ class SummaryGenerator:
             logger.info(f"✅ Summary image saved: {filepath}")
         except Exception as e:
             logger.error(f"Failed to export summary image: {e}")
-
-
 # ============================================================================
 # REP SHEET GENERATOR
 # ============================================================================

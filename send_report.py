@@ -1,6 +1,7 @@
 """
 Enhanced Email Module for CSFA Report
 Sends daily reports with professional formatting and error handling.
+UPDATED: Focus on customer visits, not revenue
 """
 
 import os
@@ -13,6 +14,7 @@ from pathlib import Path
 import mimetypes
 import pandas as pd
 from dotenv import load_dotenv
+import re
 
 load_dotenv()
 
@@ -38,7 +40,7 @@ class EmailConfig:
     BCC_RECIPIENTS = os.getenv("EMAIL_BCC", "").split(",") if os.getenv("EMAIL_BCC") else []
 
     # Email content
-    EMAIL_SUBJECT_TEMPLATE = os.getenv("EMAIL_SUBJECT", "Daily Tintas Berger CSFA Report")
+    EMAIL_SUBJECT_TEMPLATE = os.getenv("EMAIL_SUBJECT", "Tintas Berger CSFA Report - {date}")
     SENDER_NAME = os.getenv("SENDER_NAME", "Innocent Maina")
     RECIPIENT_NAME = os.getenv("RECIPIENT_NAME", "Mr. Hussein")
 
@@ -104,13 +106,13 @@ class HTMLTableGenerator:
     ALT_ROW_STYLE = "background-color: #f9f9f9;"
 
     @classmethod
-    def generate(cls, df: pd.DataFrame, format_money: bool = True) -> str:
+    def generate(cls, df: pd.DataFrame, format_money: bool = False) -> str:
         """
         Generate HTML table from DataFrame.
 
         Args:
             df: DataFrame to convert
-            format_money: Whether to format numeric columns as money
+            format_money: Whether to format numeric columns as money (not used for visit-focused report)
 
         Returns:
             HTML table string
@@ -126,17 +128,8 @@ class HTMLTableGenerator:
         for col in customer_columns:
             if col in df_formatted.columns:
                 df_formatted[col] = df_formatted[col].apply(
-                    lambda x: f"{int(x):,}" if pd.notnull(x) else ""
+                    lambda x: f"{int(x):,}" if pd.notnull(x) else "0"
                 )
-
-        # Format money columns
-        if format_money:
-            money_columns = ['ORDER VALUE FROM VISITS', 'ORDER VALUE FROM CALLS']
-            for col in money_columns:
-                if col in df_formatted.columns:
-                    df_formatted[col] = df_formatted[col].apply(
-                        lambda x: f"{x:,.2f}" if pd.notnull(x) else ""
-                    )
 
         # Build HTML table
         html = f'<table style="{cls.TABLE_STYLE}">'
@@ -155,7 +148,7 @@ class HTMLTableGenerator:
             for col in df_formatted.columns:
                 value = row[col]
                 # Right-align numbers
-                is_numeric = col in customer_columns or col in money_columns
+                is_numeric = col in customer_columns
                 align = "right" if is_numeric else "left"
                 cell_style = cls.CELL_STYLE + f" text-align: {align};"
                 html += f'<td style="{cell_style}">{value}</td>'
@@ -211,11 +204,8 @@ class EmailBuilder:
         subject = self.config.EMAIL_SUBJECT_TEMPLATE.format(date=date_str)
         msg["Subject"] = subject
 
-        # ========== GENERATE MESSAGE-ID ==========
+        # Generate Message-ID for threading
         import time
-        import socket
-
-        # Generate unique Message-ID if not threading
         thread_id = self.config.EMAIL_THREAD_ID
 
         if not thread_id:
@@ -231,7 +221,6 @@ class EmailBuilder:
             msg["In-Reply-To"] = thread_id
             msg["References"] = thread_id
             logger.info(f"📧 Threading email to: {thread_id}")
-        # ==========================================
 
         # Build HTML body
         body = self._build_html_body(summary_html, date_str)
@@ -391,13 +380,60 @@ class EmailSender:
 
 
 # ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+def parse_time_spent(time_str: str) -> int:
+    """
+    Parse time spent string and return total minutes.
+
+    Args:
+        time_str: Time string like "00 Hrs 45 Mins" or "01 Hrs 15 Mins"
+
+    Returns:
+        Total minutes as integer
+    """
+    if not time_str or time_str == "-":
+        return 0
+
+    try:
+        # Extract hours and minutes using regex
+        hours_match = re.search(r'(\d+)\s*Hrs?', time_str, re.IGNORECASE)
+        mins_match = re.search(r'(\d+)\s*Mins?', time_str, re.IGNORECASE)
+
+        hours = int(hours_match.group(1)) if hours_match else 0
+        minutes = int(mins_match.group(1)) if mins_match else 0
+
+        total_minutes = (hours * 60) + minutes
+        return total_minutes
+    except Exception as e:
+        logger.warning(f"Could not parse time string '{time_str}': {e}")
+        return 0
+
+
+def is_productive_visit(time_str: str, threshold_minutes: int = 10) -> str:
+    """
+    Determine if a visit was productive based on time spent.
+
+    Args:
+        time_str: Time spent string
+        threshold_minutes: Minimum minutes for productive visit (default 10)
+
+    Returns:
+        "Yes" or "No"
+    """
+    minutes = parse_time_spent(time_str)
+    return "Yes" if minutes >= threshold_minutes else "No"
+
+
+# ============================================================================
 # CUSTOMER DETAILS TABLE BUILDER
 # ============================================================================
 
 def _build_customer_details_table(excel_file: str, df_summary: pd.DataFrame) -> pd.DataFrame:
     """
     Build a customer details table by reading all rep sheets.
-    Format: Salesperson, Customer Name, Interaction, Time Spent, Order Value
+    Format: Salesperson, Customer Name, Interaction, Time Spent, Productive Visit
     """
     from openpyxl import load_workbook
 
@@ -423,7 +459,6 @@ def _build_customer_details_table(excel_file: str, df_summary: pd.DataFrame) -> 
             current_customer = None
             current_interaction = None
             current_time_spent = None
-            customer_order_value = 0.0
 
             for row_idx in range(1, ws.max_row + 1):
                 # Read first two columns
@@ -440,12 +475,15 @@ def _build_customer_details_table(excel_file: str, df_summary: pd.DataFrame) -> 
                 if "(" in col_a_str and col_a_str.endswith(")"):
                     # Save previous customer if exists
                     if current_customer:
+                        # Determine if productive visit
+                        productive = is_productive_visit(current_time_spent) if current_interaction in ["Visited", "Visited & Called"] else "N/A"
+
                         customer_rows.append({
                             "Salesperson": rep,
                             "Customer Name": current_customer,
                             "Interaction": current_interaction,
                             "Time Spent": current_time_spent or "-",
-                            "Order Value": customer_order_value
+                            "Productive Visit": productive
                         })
 
                     # Parse new customer
@@ -468,29 +506,16 @@ def _build_customer_details_table(excel_file: str, df_summary: pd.DataFrame) -> 
                     else:
                         current_time_spent = None
 
-                    # Reset order value for new customer
-                    customer_order_value = 0.0
-
-                # Check if this is an order value row
-                elif col_a_str and col_a_str != "Product ID" and col_a_str != "No orders":
-                    # Try to get order value from column F (column 6)
-                    order_val_cell = ws.cell(row=row_idx, column=6).value
-                    if order_val_cell:
-                        try:
-                            order_val_str = str(order_val_cell).replace(",", "")
-                            order_val = float(order_val_str)
-                            customer_order_value += order_val
-                        except (ValueError, AttributeError):
-                            pass
-
             # Don't forget the last customer
             if current_customer:
+                productive = is_productive_visit(current_time_spent) if current_interaction in ["Visited", "Visited & Called"] else "N/A"
+
                 customer_rows.append({
                     "Salesperson": rep,
                     "Customer Name": current_customer,
                     "Interaction": current_interaction,
                     "Time Spent": current_time_spent or "-",
-                    "Order Value": customer_order_value
+                    "Productive Visit": productive
                 })
 
         wb.close()
@@ -512,9 +537,6 @@ def _generate_customer_details_table(df: pd.DataFrame) -> str:
     """Generate HTML table for customer details."""
     if df.empty:
         return "<p><em>No customer interaction data available</em></p>"
-
-    # Get currency from environment
-    currency = os.getenv("REPORT_CURRENCY", "MZN")
 
     # Define styles
     header_style = (
@@ -542,30 +564,24 @@ def _generate_customer_details_table(df: pd.DataFrame) -> str:
         "box-shadow: 0 2px 4px rgba(0,0,0,0.1);"
     )
 
-    # Format order values
-    df_formatted = df.copy()
-    df_formatted["Order Value"] = df_formatted["Order Value"].apply(
-        lambda x: f"{currency} {x:,.2f}" if pd.notnull(x) and x > 0 else "-"
-    )
-
     # Build HTML
     html = f'<table style="{table_style}">'
 
     # Header
     html += '<thead><tr>'
-    for col in df_formatted.columns:
+    for col in df.columns:
         html += f'<th style="{header_style}">{col}</th>'
     html += '</tr></thead>'
 
     # Body with alternating colors
     html += '<tbody>'
-    for idx, row in df_formatted.iterrows():
+    for idx, row in df.iterrows():
         row_style = "background-color: #f9f9f9;" if idx % 2 == 1 else ""
         html += f'<tr style="{row_style}">'
-        for col in df_formatted.columns:
+        for col in df.columns:
             value = row[col]
-            # Right-align order value
-            align = "right" if col == "Order Value" else "left"
+            # Center-align Productive Visit column
+            align = "center" if col == "Productive Visit" else "left"
             style = cell_style + f" text-align: {align};"
             html += f'<td style="{style}">{value}</td>'
         html += '</tr>'
@@ -576,23 +592,20 @@ def _generate_customer_details_table(df: pd.DataFrame) -> str:
 
 
 def _generate_kpi_section(df_summary: pd.DataFrame) -> str:
-    """Generate KPI summary section with total customers and revenue."""
+    """Generate KPI summary section focused on customer visits."""
     try:
-        # Get currency from environment or default to MZN
-        currency = os.getenv("REPORT_CURRENCY", "MZN")
-
         # Calculate totals
-        total_customers_visited = df_summary["CUSTOMERS VISITED"].sum()
-        total_customers_called = df_summary["CUSTOMERS CALLED"].sum()
-        total_customers = total_customers_visited + total_customers_called
+        total_customers_visited = int(df_summary["CUSTOMERS VISITED"].sum())
+        total_customers_called = int(df_summary["CUSTOMERS CALLED"].sum())
 
-        total_revenue_visits = df_summary["ORDER VALUE FROM VISITS"].sum()
-        total_revenue_calls = df_summary["ORDER VALUE FROM CALLS"].sum()
-        total_revenue = total_revenue_visits + total_revenue_calls
+        # Calculate active salespeople (those who used the app)
+        active_salespeople = int(df_summary[df_summary["APP USAGE"] == "Used App"].shape[0])
+        total_salespeople = len(df_summary)
+        active_fraction = f"{active_salespeople}/{total_salespeople}"
 
         # Format numbers
-        total_customers_str = f"{int(total_customers):,}"
-        total_revenue_str = f"{currency} {total_revenue:,.2f}"
+        visited_str = f"{total_customers_visited:,}"
+        called_str = f"{total_customers_called:,}"
 
         # Generate KPI HTML
         kpi_html = f"""
@@ -600,13 +613,17 @@ def _generate_kpi_section(df_summary: pd.DataFrame) -> str:
             <h3 style="color: #4F81BD; margin-bottom: 15px;">Key Performance Indicators</h3>
             <table style="border-collapse: collapse; width: 100%; margin-bottom: 20px;">
                 <tr>
-                    <td style="padding: 15px; background-color: #E8F4F8; border: 2px solid #4F81BD; width: 50%; text-align: center;">
-                        <div style="font-size: 14px; color: #666; margin-bottom: 5px;">TOTAL CUSTOMERS (Visited & Called)</div>
-                        <div style="font-size: 28px; font-weight: bold; color: #4F81BD;">{total_customers_str}</div>
+                    <td style="padding: 15px; background-color: #E8F4F8; border: 2px solid #4F81BD; width: 33.33%; text-align: center;">
+                        <div style="font-size: 14px; color: #666; margin-bottom: 5px;">CUSTOMERS VISITED</div>
+                        <div style="font-size: 28px; font-weight: bold; color: #4F81BD;">{visited_str}</div>
                     </td>
-                    <td style="padding: 15px; background-color: #E8F4F8; border: 2px solid #4F81BD; width: 50%; text-align: center;">
-                        <div style="font-size: 14px; color: #666; margin-bottom: 5px;">TOTAL ORDER REVENUE</div>
-                        <div style="font-size: 28px; font-weight: bold; color: #4F81BD;">{total_revenue_str}</div>
+                    <td style="padding: 15px; background-color: #E8F4F8; border: 2px solid #4F81BD; width: 33.33%; text-align: center;">
+                        <div style="font-size: 14px; color: #666; margin-bottom: 5px;">CUSTOMERS CALLED</div>
+                        <div style="font-size: 28px; font-weight: bold; color: #4F81BD;">{called_str}</div>
+                    </td>
+                    <td style="padding: 15px; background-color: #E8F4F8; border: 2px solid #4F81BD; width: 33.33%; text-align: center;">
+                        <div style="font-size: 14px; color: #666; margin-bottom: 5px;">ACTIVE SALESPEOPLE</div>
+                        <div style="font-size: 28px; font-weight: bold; color: #4F81BD;">{active_fraction}</div>
                     </td>
                 </tr>
             </table>
@@ -677,7 +694,7 @@ def send_report(
         # Generate summary table
         logger.info("🎨 Generating summary table...")
         html_generator = HTMLTableGenerator()
-        summary_html_table = html_generator.generate(df_summary, format_money=True)
+        summary_html_table = html_generator.generate(df_summary, format_money=False)
 
         # Generate customer details table
         logger.info("🎨 Generating customer details table...")
