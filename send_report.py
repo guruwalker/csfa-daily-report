@@ -200,14 +200,23 @@ class EmailBuilder:
         if bcc_recipients:
             msg["Bcc"] = ", ".join(bcc_recipients)
 
-        # Set subject
-        subject = self.config.EMAIL_SUBJECT_TEMPLATE.format(date=date_str)
+        # ========== IMPROVED THREADING LOGIC ==========
+        import time
+
+        thread_id = self.config.EMAIL_THREAD_ID
+        base_subject = self.config.EMAIL_SUBJECT_TEMPLATE
+
+        # Set subject - keep it consistent for threading
+        if thread_id:
+            # Reply - add Re: prefix and keep base subject
+            subject = f"Re: {base_subject}"
+        else:
+            # First email
+            subject = base_subject
+
         msg["Subject"] = subject
 
-        # Generate Message-ID for threading
-        import time
-        thread_id = self.config.EMAIL_THREAD_ID
-
+        # Handle Message-ID and threading headers
         if not thread_id:
             # First email - generate a Message-ID
             timestamp = str(int(time.time() * 1000))
@@ -215,12 +224,18 @@ class EmailBuilder:
             message_id = f"<csfa-report-{timestamp}@{hostname}>"
             msg["Message-ID"] = message_id
             logger.info(f"📧 Generated new Message-ID: {message_id}")
-            logger.info(f"⚠️  SAVE THIS MESSAGE-ID to .env as EMAIL_THREAD_ID for threading!")
+            logger.info(f"⚠️  SAVE THIS to .env as EMAIL_THREAD_ID for threading!")
         else:
             # Reply to existing thread
+            # In-Reply-To should be the ORIGINAL message ID (first in thread)
             msg["In-Reply-To"] = thread_id
+
+            # References should be the SAME as In-Reply-To for consistent threading
+            # Email clients will group messages with the same References header
             msg["References"] = thread_id
+
             logger.info(f"📧 Threading email to: {thread_id}")
+        # ==============================================
 
         # Build HTML body
         body = self._build_html_body(summary_html, date_str)
@@ -312,7 +327,6 @@ class EmailBuilder:
             logger.info(f"✅ Attached: {os.path.basename(filepath)}")
         except Exception as e:
             logger.error(f"❌ Failed to attach {filepath}: {e}")
-
 
 # ============================================================================
 # EMAIL SENDER

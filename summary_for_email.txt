@@ -1,7 +1,7 @@
         SALESPERSON CUSTOMERS VISITED CUSTOMERS CALLED       APP USAGE
      ANDRE MARQUEZA                 5                1        Used App
         IMRAN AHMED                 0                0 Did Not Use App
-   INÁCIO RODRIGUES                11                0        Used App
+   INÁCIO RODRIGUES                 7                0        Used App
    KUMAR CHAMPAKLAL                 0                0 Did Not Use App
-       LAURA MARCIA                 0                1        Used App
-RICARDO DINIS LANGA                 7                2        Used App
+       LAURA MARCIA                 0                0 Did Not Use App
+RICARDO DINIS LANGA                 8                1        Used App
