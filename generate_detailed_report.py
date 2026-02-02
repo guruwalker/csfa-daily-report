@@ -1,7 +1,7 @@
 """
-Refactored CSFA Report Generator
+Refactored CSFA Report Generator with Monthly Attendance Tracking
 Generates detailed Excel reports with visits, orders, and product details.
-Filters out test accounts and tracks app usage for all salespeople.
+Filters out test accounts and tracks monthly attendance using attendance.json
 """
 
 import pandas as pd
@@ -9,6 +9,7 @@ import os
 import logging
 from typing import List, Dict, Any, Set, Tuple
 from dataclasses import dataclass
+from datetime import datetime
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
@@ -23,6 +24,7 @@ except ImportError:
 
 from api_client import get_order_details
 from config import is_excluded_account, get_all_salespeople, normalize_name
+from attendance_tracker import AttendanceTracker, update_attendance_for_date, generate_monthly_attendance_summary
 
 # Configure logging
 logging.basicConfig(
@@ -42,12 +44,15 @@ class ReportConfig:
     output_file: str = "Daily_CSFA_Report.xlsx"
     summary_text_file: str = "summary_for_email.txt"
     summary_image_file: str = "summary_sheet.png"
+    attendance_json_file: str = "attendance.json"
 
     # Styling colors
     header_color: str = "4F81BD"
     customer_fill_color: str = "4BACC6"  # Bright blue
     product_header_color: str = "92D050"  # Light green
     error_color: str = "FF0000"
+    perfect_attendance_color: str = "C6EFCE"  # Light green
+    absent_color: str = "FFC7CE"  # Light red
 
     # Fonts
     header_font_name: str = "Times New Roman"
@@ -62,6 +67,7 @@ class ReportConfig:
             output_file=os.getenv("OUTPUT_FILE", "Daily_CSFA_Report.xlsx"),
             summary_text_file=os.getenv("SUMMARY_TEXT_FILE", "summary_for_email.txt"),
             summary_image_file=os.getenv("SUMMARY_IMAGE_FILE", "summary_sheet.png"),
+            attendance_json_file=os.getenv("ATTENDANCE_JSON_FILE", "attendance.json"),
         )
 
 
@@ -210,30 +216,12 @@ class ExcelStyler:
         self.config = config
 
     def calculate_row_height(self, text: str, column_width: float, font_size: int = 12) -> float:
-        """
-        Calculate the required row height for wrapped text.
-        More accurate calculation based on actual character counting.
-
-        Args:
-            text: The text content
-            column_width: Width of the column in Excel units
-            font_size: Font size in points
-
-        Returns:
-            Required row height in points
-        """
+        """Calculate the required row height for wrapped text."""
         if not text or pd.isna(text):
-            return 15  # Default row height
+            return 15
 
         text = str(text)
-
-        # Excel column width is measured in character widths
-        # For Times New Roman 12pt, roughly 7 pixels per character
-        # Column width in Excel is based on default font character width
-        # Using 0.85 for more conservative estimate (ensures text fits)
         chars_per_line = max(1, int(column_width * 0.85))
-
-        # Split by newlines first (in case there are explicit line breaks)
         lines = text.split('\n')
         total_lines = 0
 
@@ -241,17 +229,12 @@ class ExcelStyler:
             if len(line) == 0:
                 total_lines += 1
             else:
-                # Calculate how many wrapped lines this line will take
                 line_count = max(1, int(len(line) / chars_per_line) + (1 if len(line) % chars_per_line > 0 else 0))
                 total_lines += line_count
 
-        # Calculate row height with more generous spacing
-        # Base line height: font_size * 1.3 (generous line spacing)
-        # Add padding: +8 points for readability
         line_height = font_size * 1.3
         calculated_height = (total_lines * line_height) + 8
 
-        # Ensure minimum height of 18 points, maximum of 409 (Excel limit)
         return max(18, min(409, calculated_height))
 
     def apply_summary_styling(self, ws: Worksheet) -> None:
@@ -260,7 +243,6 @@ class ExcelStyler:
             logger.warning("Empty worksheet, skipping styling")
             return
 
-        # Define border style
         thin_border = Border(
             left=Side(style='thin'),
             right=Side(style='thin'),
@@ -268,7 +250,6 @@ class ExcelStyler:
             bottom=Side(style='thin')
         )
 
-        # Style header row
         header_font = Font(
             name=self.config.header_font_name,
             size=self.config.header_font_size,
@@ -292,7 +273,6 @@ class ExcelStyler:
             logger.warning("Cannot style header row - worksheet may be empty")
             return
 
-        # Style body rows
         body_font = Font(
             name=self.config.body_font_name,
             size=self.config.body_font_size
@@ -305,14 +285,13 @@ class ExcelStyler:
                 cell.alignment = body_align
                 cell.border = thin_border
 
-        # Set wider column widths to minimize wrapping
         column_widths = {
             1: 25,  # SALESPERSON
             2: 20,  # CUSTOMERS VISITED
             3: 30,  # ORDER VALUE FROM VISITS
             4: 20,  # CUSTOMERS CALLED
             5: 30,  # ORDER VALUE FROM CALLS
-            6: 20,  # APP USAGE (NEW COLUMN)
+            6: 20,  # APP USAGE
         }
 
         for col_idx, width in column_widths.items():
@@ -320,47 +299,100 @@ class ExcelStyler:
                 column = get_column_letter(col_idx)
                 ws.column_dimensions[column].width = width
 
-        # Set header row height (row 1)
-        ws.row_dimensions[1].height = 30  # Fixed height for header
+        ws.row_dimensions[1].height = 30
 
-        # Calculate and set row heights for data rows (row 2 onwards)
         for row_idx in range(2, ws.max_row + 1):
-            max_height = 18  # Default minimum height for data rows
+            max_height = 18
 
             for col_idx in range(1, ws.max_column + 1):
                 cell = ws.cell(row=row_idx, column=col_idx)
                 cell_value = cell.value
 
-                # Skip empty cells
                 if cell_value is None or (isinstance(cell_value, str) and not cell_value.strip()):
                     continue
 
-                # Get column width for this column
                 col_width = column_widths.get(col_idx, 20)
 
-                # Calculate required height
                 try:
                     height = self.calculate_row_height(cell_value, col_width, self.config.body_font_size)
                     max_height = max(max_height, height)
                 except Exception as e:
                     logger.warning(f"Could not calculate height for row {row_idx}, col {col_idx}: {e}")
-                    max_height = max(max_height, 35)  # Fallback to larger height
+                    max_height = max(max_height, 35)
 
-            # Set the row height
             ws.row_dimensions[row_idx].height = max_height
 
-    def _auto_adjust_columns(self, ws: Worksheet) -> None:
-        """Auto-adjust column widths based on content."""
-        for col_idx, col in enumerate(ws.columns, start=1):
-            max_length = 0
-            column = get_column_letter(col_idx)
+    def apply_attendance_styling(self, ws: Worksheet) -> None:
+        """Apply styling to monthly attendance sheet with color coding."""
+        if not ws or ws.max_row == 0:
+            logger.warning("Empty worksheet, skipping styling")
+            return
 
-            for cell in col:
-                if cell.value:
-                    max_length = max(max_length, len(str(cell.value)))
+        thin_border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
 
-            adjusted_width = min(max_length + 2, 50)  # Cap at 50
-            ws.column_dimensions[column].width = adjusted_width
+        # Header styling
+        header_font = Font(
+            name=self.config.header_font_name,
+            size=self.config.header_font_size,
+            bold=True,
+            color="FFFFFF"
+        )
+        header_fill = PatternFill(
+            start_color=self.config.header_color,
+            end_color=self.config.header_color,
+            fill_type="solid"
+        )
+
+        for cell in ws[1]:
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.border = thin_border
+
+        # Body styling with conditional formatting
+        perfect_fill = PatternFill(
+            start_color=self.config.perfect_attendance_color,
+            end_color=self.config.perfect_attendance_color,
+            fill_type="solid"
+        )
+        absent_fill = PatternFill(
+            start_color=self.config.absent_color,
+            end_color=self.config.absent_color,
+            fill_type="solid"
+        )
+
+        body_font = Font(name=self.config.body_font_name, size=self.config.body_font_size)
+
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+            attendance_cell = row[1] if len(row) > 1 else None  # Attendance column
+
+            for cell in row:
+                cell.font = body_font
+                cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+                cell.border = thin_border
+
+                # Color code based on attendance status
+                if attendance_cell and attendance_cell.value:
+                    if "Perfect attendance" in str(attendance_cell.value):
+                        cell.fill = perfect_fill
+                    elif "No attendance" in str(attendance_cell.value):
+                        cell.fill = absent_fill
+
+        # Set column widths
+        ws.column_dimensions['A'].width = 30  # Salesperson
+        ws.column_dimensions['B'].width = 60  # Attendance
+
+        # Adjust row heights
+        for row_idx in range(2, ws.max_row + 1):
+            attendance_cell = ws.cell(row=row_idx, column=2)
+            if attendance_cell.value:
+                height = self.calculate_row_height(str(attendance_cell.value), 60, self.config.body_font_size)
+                ws.row_dimensions[row_idx].height = max(25, height)
 
     def format_money_columns(self, ws: Worksheet, columns: List[int]) -> None:
         """Format specific columns as money."""
@@ -394,7 +426,7 @@ class SummaryGenerator:
             rep_calls = df_called[df_called["sales_rep"] == rep]
             customers_called = rep_calls["customer_called"].nunique()
 
-            # Determine app usage: if they have visits OR calls, they used the app
+            # Determine app usage
             app_usage = "Used App" if (customers_visited > 0 or customers_called > 0) else "Did Not Use App"
 
             summary_rows.append({
@@ -410,7 +442,6 @@ class SummaryGenerator:
         """Export summary as formatted text for email."""
         summary_for_email = df_summary.copy()
 
-        # Format numbers with commas for customer counts
         summary_for_email["CUSTOMERS VISITED"] = \
             summary_for_email["CUSTOMERS VISITED"].map(lambda x: f"{int(x):,}")
         summary_for_email["CUSTOMERS CALLED"] = \
@@ -432,6 +463,8 @@ class SummaryGenerator:
             logger.info(f"✅ Summary image saved: {filepath}")
         except Exception as e:
             logger.error(f"Failed to export summary image: {e}")
+
+
 # ============================================================================
 # REP SHEET GENERATOR
 # ============================================================================
@@ -443,7 +476,6 @@ class RepSheetGenerator:
         self.access_token = access_token
         self.config = config
 
-        # Initialize fill patterns
         self.customer_fill = PatternFill(
             start_color=config.customer_fill_color,
             end_color=config.customer_fill_color,
@@ -466,22 +498,16 @@ class RepSheetGenerator:
         """Create a complete sheet for a sales rep."""
         logger.info(f"  Processing: {rep}")
 
-        # Build customer dictionary
         rep_visits = df_final[df_final["sales_rep_final"] == rep]
         rep_calls = df_called[df_called["sales_rep"] == rep]
         customers = self._build_customer_dict(rep, rep_visits, rep_calls, orders_data)
 
-        # Create sheet name
         sheet_name = rep.replace(".", "_").replace(" ", "_")[:31]
 
-        # Create empty worksheet
         writer.book.create_sheet(sheet_name)
         ws = writer.book[sheet_name]
 
-        # Write data with styling
         self._write_rep_data(ws, customers, rep)
-
-        # Apply general styling (column widths and row heights)
         self._adjust_column_widths_and_heights(ws)
 
     def _build_customer_dict(
@@ -494,7 +520,6 @@ class RepSheetGenerator:
         """Build dictionary of customer information."""
         customers = {}
 
-        # Add visits
         for _, visit in rep_visits.iterrows():
             cust = visit["customer_name_final"]
             customers[cust] = {
@@ -503,7 +528,6 @@ class RepSheetGenerator:
                 "orders": [],
             }
 
-        # Add calls
         for _, call in rep_calls.iterrows():
             cust = call["customer_called"]
             customers.setdefault(
@@ -513,7 +537,6 @@ class RepSheetGenerator:
             if customers[cust]["visit_type"] == "Visited":
                 customers[cust]["visit_type"] = "Visited & Called"
 
-        # Add orders
         for order in orders_data:
             if order.get("sales_rep") != rep:
                 continue
@@ -535,7 +558,6 @@ class RepSheetGenerator:
         row_idx = 1
         wrap_align = Alignment(horizontal="left", vertical="center", wrap_text=True)
 
-        # Define border style
         thin_border = Border(
             left=Side(style='thin'),
             right=Side(style='thin'),
@@ -544,7 +566,6 @@ class RepSheetGenerator:
         )
 
         for cust_name, info in customers.items():
-            # Format customer name with visit type in brackets
             visit_type = info["visit_type"]
             if visit_type == "Visited":
                 customer_display = f"{cust_name} (visited)"
@@ -555,10 +576,8 @@ class RepSheetGenerator:
             else:
                 customer_display = cust_name
 
-            # Customer header row - write values first
             ws.cell(row=row_idx, column=1, value=customer_display)
 
-            # Format time spent
             time_spent = info["time_spent"]
             if time_spent and visit_type in ["Visited", "Visited & Called"]:
                 time_display = f"Time Spent: {time_spent}"
@@ -572,7 +591,6 @@ class RepSheetGenerator:
             ws.cell(row=row_idx, column=6, value="")
             ws.cell(row=row_idx, column=7, value="")
 
-            # Style customer header with Times New Roman font, wrap text, and borders
             for col_idx in range(1, 8):
                 cell = ws.cell(row=row_idx, column=col_idx)
                 cell.fill = self.customer_fill
@@ -586,11 +604,9 @@ class RepSheetGenerator:
 
             row_idx += 1
 
-            # Fetch and add order items
             all_items = self._fetch_order_items(info["orders"], rep)
 
             if all_items:
-                # Product table header row
                 ws.cell(row=row_idx, column=1, value="Product ID")
                 ws.cell(row=row_idx, column=2, value="Product Description")
                 ws.cell(row=row_idx, column=3, value="")
@@ -599,7 +615,6 @@ class RepSheetGenerator:
                 ws.cell(row=row_idx, column=6, value="Order Value")
                 ws.cell(row=row_idx, column=7, value="")
 
-                # Style product header with Times New Roman font, wrap text, and borders
                 for col_idx in range(1, 8):
                     cell = ws.cell(row=row_idx, column=col_idx)
                     cell.fill = self.product_header_fill
@@ -614,16 +629,13 @@ class RepSheetGenerator:
 
                 row_idx += 1
 
-                # Add product rows with Times New Roman font, wrap text, and borders
                 for item in all_items:
                     qty = float(item.get("sold_qty", 0))
                     cost = float(item.get("unit_cost", 0))
 
-                    # Clean product description - remove "ID - " prefix
                     product_desc = item.get("product_desc", "")
                     product_id = str(item.get("product_id", ""))
 
-                    # Remove product ID prefix if it exists
                     if product_desc and product_id:
                         prefix = f"{product_id} - "
                         if product_desc.startswith(prefix):
@@ -637,7 +649,6 @@ class RepSheetGenerator:
                     ws.cell(row=row_idx, column=6, value=f"{qty * cost:,.2f}")
                     ws.cell(row=row_idx, column=7, value="")
 
-                    # Apply Times New Roman font, wrap text, and borders to product rows
                     for col_idx in range(1, 8):
                         cell = ws.cell(row=row_idx, column=col_idx)
                         cell.font = Font(
@@ -649,7 +660,6 @@ class RepSheetGenerator:
 
                     row_idx += 1
             else:
-                # No orders - set value FIRST, then merge
                 no_orders_cell = ws.cell(row=row_idx, column=1)
                 no_orders_cell.value = "No orders"
                 no_orders_cell.font = Font(
@@ -661,12 +671,10 @@ class RepSheetGenerator:
                 no_orders_cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
                 no_orders_cell.border = thin_border
 
-                # Apply borders to all cells before merging
                 for col_idx in range(1, 8):
                     cell = ws.cell(row=row_idx, column=col_idx)
                     cell.border = thin_border
 
-                # Now merge cells
                 ws.merge_cells(
                     start_row=row_idx,
                     start_column=1,
@@ -676,7 +684,6 @@ class RepSheetGenerator:
 
                 row_idx += 1
 
-            # Empty separator row - add borders to maintain grid
             for col_idx in range(1, 8):
                 cell = ws.cell(row=row_idx, column=col_idx)
                 cell.border = thin_border
@@ -693,52 +700,45 @@ class RepSheetGenerator:
                 all_items.extend(details.get("entries", []))
             except Exception as e:
                 logger.error(f"Error fetching order {order_id} for {rep}: {e}")
-                # Don't add error rows - just log and continue
 
         return all_items
 
     def _adjust_column_widths_and_heights(self, ws: Worksheet) -> None:
         """Set wider column widths and calculate row heights for rep sheet."""
         column_widths = {
-            1: 45,  # Column A: Customer Name with visit type (wider)
-            2: 40,  # Column B: Time Spent / Product Description (wider for long descriptions)
-            3: 20,  # Column C: Extra space
-            4: 15,  # Column D: Sold Qty
-            5: 15,  # Column E: Unit Cost
-            6: 18,  # Column F: Order Value
-            7: 10,  # Column G: Empty column
+            1: 45,
+            2: 40,
+            3: 20,
+            4: 15,
+            5: 15,
+            6: 18,
+            7: 10,
         }
 
-        # Set column widths
         for col_idx, width in column_widths.items():
             col_letter = get_column_letter(col_idx)
             ws.column_dimensions[col_letter].width = width
 
-        # Calculate and set row heights for all rows
         styler = ExcelStyler(self.config)
         for row_idx in range(1, ws.max_row + 1):
-            max_height = 18  # Default minimum height (increased from 15)
+            max_height = 18
 
-            for col_idx in range(1, 8):  # We have 7 columns
+            for col_idx in range(1, 8):
                 cell = ws.cell(row=row_idx, column=col_idx)
                 cell_value = cell.value
 
-                # Skip empty cells
                 if cell_value is None or (isinstance(cell_value, str) and not cell_value.strip()):
                     continue
 
-                # Get column width for this column
                 col_width = column_widths.get(col_idx, 20)
 
-                # Calculate required height
                 try:
                     height = styler.calculate_row_height(cell_value, col_width, self.config.body_font_size)
                     max_height = max(max_height, height)
                 except Exception as e:
                     logger.warning(f"Could not calculate height for row {row_idx}, col {col_idx}: {e}")
-                    max_height = max(max_height, 35)  # Fallback to larger height
+                    max_height = max(max_height, 35)
 
-            # Set the row height with extra padding for readability
             ws.row_dimensions[row_idx].height = max_height
 
 
@@ -749,24 +749,30 @@ class RepSheetGenerator:
 def generate_detailed_report(
     visits_data: List[Dict],
     orders_data: List[Dict],
+    report_date: datetime = None,
     config: ReportConfig = None
 ) -> None:
     """
-    Generate detailed CSFA report with visits and orders.
+    Generate detailed CSFA report with visits, orders, and monthly attendance tracking.
 
     Args:
         visits_data: List of visit records
         orders_data: List of order records
+        report_date: Date for which the report is being generated (defaults to today)
         config: Optional configuration object
     """
     if config is None:
         config = ReportConfig.from_env()
+
+    if report_date is None:
+        report_date = datetime.now()
 
     access_token = os.getenv("ACCESS_TOKEN")
     if not access_token:
         raise ValueError("ACCESS_TOKEN not found in environment variables")
 
     logger.info(f"🚀 Starting report generation: {config.output_file}")
+    logger.info(f"📅 Report date: {report_date.strftime('%Y-%m-%d')}")
 
     # Remove old file
     if os.path.exists(config.output_file):
@@ -778,6 +784,9 @@ def generate_detailed_report(
     styler = ExcelStyler(config)
     summary_gen = SummaryGenerator()
     rep_gen = RepSheetGenerator(access_token, config)
+
+    # Initialize attendance tracker
+    attendance_tracker = AttendanceTracker(config.attendance_json_file)
 
     # Process data
     logger.info("📊 Processing data...")
@@ -792,18 +801,38 @@ def generate_detailed_report(
     # Generate summary
     df_summary = summary_gen.generate_summary(reps, df_final, df_called)
 
+    # Update attendance tracking
+    logger.info("📅 Updating attendance tracking...")
+    salespeople_present = list(df_summary[df_summary["APP USAGE"] == "Used App"]["SALESPERSON"])
+    update_attendance_for_date(attendance_tracker, salespeople_present, reps, report_date)
+
+    # Generate monthly attendance summary
+    month_name = report_date.strftime("%B")  # e.g., "February"
+    logger.info(f"📋 Generating monthly attendance summary for {month_name}...")
+    attendance_summary = generate_monthly_attendance_summary(
+        attendance_tracker,
+        reps,
+        report_date.year,
+        report_date.month
+    )
+    df_attendance = pd.DataFrame(attendance_summary)
+
     # Create Excel file
     logger.info("📝 Creating Excel file...")
     with pd.ExcelWriter(config.output_file, engine="openpyxl") as writer:
-        # Write summary sheet with special styling
+        # 1. Summary sheet
         df_summary.to_excel(writer, index=False, sheet_name="Summary")
         ws = writer.sheets["Summary"]
-        styler.apply_summary_styling(ws)  # Use summary-specific styling
-        styler.format_money_columns(ws, [2, 4])  # Order value columns (0-indexed: columns 3 and 5)
+        styler.apply_summary_styling(ws)
+        styler.format_money_columns(ws, [2, 4])
 
-        # Write individual rep sheets (only for reps who used the app)
+        # 2. Monthly Attendance sheet
+        df_attendance.to_excel(writer, index=False, sheet_name=f"Monthly Attendance - {month_name}")
+        ws_attendance = writer.sheets[f"Monthly Attendance - {month_name}"]
+        styler.apply_attendance_styling(ws_attendance)
+
+        # 3. Individual rep sheets (only for reps who used the app)
         for rep in reps:
-            # Check if rep used the app
             rep_data = df_summary[df_summary["SALESPERSON"] == rep]
             if not rep_data.empty and rep_data.iloc[0]["APP USAGE"] == "Used App":
                 rep_gen.create_rep_sheet(writer, rep, df_final, df_called, orders_data)
@@ -815,6 +844,7 @@ def generate_detailed_report(
     summary_gen.export_summary_image(df_summary, config.summary_image_file)
 
     logger.info(f"✅ Report generation complete: {config.output_file}")
+    logger.info(f"✅ Attendance tracking updated in: {config.attendance_json_file}")
 
 
 # ============================================================================
@@ -822,5 +852,4 @@ def generate_detailed_report(
 # ============================================================================
 
 if __name__ == "__main__":
-    # This allows testing the module independently
-    logger.info("Report generator module loaded successfully")
+    logger.info("Report generator module with monthly attendance tracking loaded successfully")

@@ -324,7 +324,7 @@ def generate_and_send_report() -> bool:
         # Generate report
         logger.info("\n📊 Generating detailed Excel report...")
         report_config = ReportConfig.from_env()
-        generate_detailed_report(visits_data, orders_data, report_config)
+        generate_detailed_report(visits_data, orders_data)
 
         # Send email (if configured)
         if Config.SEND_EMAIL:

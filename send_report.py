@@ -2,6 +2,7 @@
 Enhanced Email Module for CSFA Report
 Sends daily reports with professional formatting and error handling.
 UPDATED: Focus on customer visits, not revenue
+UPDATED: Added attendance tracking tables
 """
 
 import os
@@ -53,6 +54,9 @@ class EmailConfig:
 
     # SMTP timeout
     SMTP_TIMEOUT = int(os.getenv("SMTP_TIMEOUT", "30"))
+
+    # Feature flags
+    INCLUDE_MONTHLY_ATTENDANCE = os.getenv("INCLUDE_MONTHLY_ATTENDANCE", "true").lower() == "true"
 
     @classmethod
     def validate(cls) -> None:
@@ -112,7 +116,7 @@ class HTMLTableGenerator:
 
         Args:
             df: DataFrame to convert
-            format_money: Whether to format numeric columns as money (not used for visit-focused report)
+            format_money: Whether to format numeric columns as money
 
         Returns:
             HTML table string
@@ -651,6 +655,32 @@ def _generate_kpi_section(df_summary: pd.DataFrame) -> str:
         return ""
 
 
+def _get_monthly_attendance_sheet_name(excel_file: str) -> str:
+    """
+    Find the monthly attendance sheet name in the Excel file.
+    It should be named like "Monthly Attendance - February"
+
+    Args:
+        excel_file: Path to Excel file
+
+    Returns:
+        Sheet name if found, None otherwise
+    """
+    from openpyxl import load_workbook
+
+    try:
+        wb = load_workbook(excel_file, read_only=True)
+        for sheet_name in wb.sheetnames:
+            if sheet_name.startswith("Monthly Attendance -"):
+                wb.close()
+                return sheet_name
+        wb.close()
+    except Exception as e:
+        logger.warning(f"Could not search for attendance sheet: {e}")
+
+    return None
+
+
 # ============================================================================
 # MAIN REPORT SENDER
 # ============================================================================
@@ -662,7 +692,7 @@ def send_report(
     additional_attachments: Optional[List[str]] = None
 ) -> bool:
     """
-    Send CSFA report via email.
+    Send CSFA report via email with monthly attendance tracking.
 
     Args:
         excel_file: Path to Excel file (optional, uses config default)
@@ -697,11 +727,33 @@ def send_report(
             logger.error(f"❌ Failed to read Excel file: {e}")
             return False
 
+        # Read monthly attendance sheet if enabled
+        df_monthly_attendance = None
+        attendance_sheet_name = None
+        month_name = None
+
+        if EmailConfig.INCLUDE_MONTHLY_ATTENDANCE:
+            try:
+                # Find the monthly attendance sheet
+                attendance_sheet_name = _get_monthly_attendance_sheet_name(excel_file)
+
+                if attendance_sheet_name:
+                    logger.info(f"📖 Reading monthly attendance from sheet: {attendance_sheet_name}")
+                    df_monthly_attendance = pd.read_excel(excel_file, sheet_name=attendance_sheet_name)
+
+                    # Extract month name from sheet name
+                    month_name = attendance_sheet_name.split(" - ")[-1] if attendance_sheet_name else "This Month"
+                else:
+                    logger.warning("⚠️ Monthly attendance sheet not found")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not read monthly attendance sheet: {e}")
+                logger.info("Continuing without attendance data in email...")
+
         # Read all individual rep sheets to build customer detail table
         logger.info(f"📖 Reading individual rep sheets for customer details...")
         df_customer_details = _build_customer_details_table(excel_file, df_summary)
 
-        # Generate KPI section
+        # Generate KPI sections
         logger.info("📈 Calculating KPIs...")
         kpi_html = _generate_kpi_section(df_summary)
 
@@ -714,11 +766,42 @@ def send_report(
         logger.info("🎨 Generating customer details table...")
         customer_details_html = _generate_customer_details_table(df_customer_details)
 
+        # Generate monthly attendance table if available
+        monthly_attendance_html = ""
+        if df_monthly_attendance is not None and not df_monthly_attendance.empty:
+            logger.info("🎨 Generating monthly attendance table...")
+
+            # Check if attendance data has any actual records
+            # If "Attendance" column shows "No attendance recorded yet" for all rows
+            has_actual_attendance = False
+            if "Attendance" in df_monthly_attendance.columns:
+                has_actual_attendance = not all(
+                    "No attendance" in str(val) for val in df_monthly_attendance["Attendance"]
+                )
+
+            if has_actual_attendance:
+                # Generate regular table for actual attendance data
+                monthly_attendance_html = html_generator.generate(
+                    df_monthly_attendance,
+                    format_money=False
+                )
+                monthly_attendance_html = f"""
+                <h3 style="color: #4F81BD; margin-top: 30px;">Monthly Attendance Summary - {month_name}</h3>
+                {monthly_attendance_html}
+                """
+            else:
+                # Show simple message for no attendance yet
+                monthly_attendance_html = f"""
+                <h3 style="color: #4F81BD; margin-top: 30px;">Monthly Attendance Summary - {month_name}</h3>
+                <p style="color: #666; font-style: italic;">No attendance recorded yet for {month_name}.</p>
+                """
+
         # Combine sections
         summary_html = f"""
         {kpi_html}
         <h3 style="color: #4F81BD; margin-top: 30px;">Summary by Salesperson</h3>
         {summary_html_table}
+        {monthly_attendance_html}
         <h3 style="color: #4F81BD; margin-top: 30px;">All Customer Interactions</h3>
         {customer_details_html}
         """
@@ -768,7 +851,7 @@ def main():
     )
 
     logger.info("=" * 60)
-    logger.info("CSFA Report Email Sender")
+    logger.info("CSFA Report Email Sender (with Monthly Attendance)")
     logger.info("=" * 60)
 
     success = send_report()
