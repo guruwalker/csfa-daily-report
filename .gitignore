@@ -4,6 +4,8 @@
 # SENSITIVE FILES - NEVER COMMIT THESE
 # ============================================================================
 .env.local
+.env
+.env.*.env
 .env.*.local
 *.key
 *.pem
@@ -82,6 +84,7 @@ coverage.xml
 # Virtual environments
 venv/
 env/
+.env
 ENV/
 env.bak/
 venv.bak/

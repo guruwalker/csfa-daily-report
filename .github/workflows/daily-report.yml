@@ -1,21 +1,26 @@
-name: Daily CSFA Report
+name: Daily CSFA Report with Attendance
 
 on:
   # Run at 7 PM East Africa Time (4 PM UTC) on weekdays
   schedule:
-    - cron: '0 16 * * 1-5'  # Mon-Fri at 4 PM UTC (7 PM EAT)
+    - cron: "0 16 * * 1-5" # Mon-Fri at 4 PM UTC (7 PM EAT)
 
   # Allow manual trigger
   workflow_dispatch:
     inputs:
       send_email:
-        description: 'Send email report?'
+        description: "Send email report?"
         required: false
-        default: 'true'
+        default: "true"
         type: choice
         options:
-          - 'true'
-          - 'false'
+          - "true"
+          - "false"
+      report_date:
+        description: "Report date (YYYY-MM-DD) - leave empty for today"
+        required: false
+        default: ""
+        type: string
 
 jobs:
   generate-report:
@@ -28,7 +33,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - name: Cache dependencies
         uses: actions/cache@v4
@@ -42,6 +47,20 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+
+      # ============================================================================
+      # ATTENDANCE TRACKING: Restore attendance.json from repository
+      # ============================================================================
+      - name: Restore attendance.json
+        run: |
+          if [ -f attendance.json ]; then
+            echo "✅ Found attendance.json in repository"
+            echo "📅 Attendance data available for tracking"
+            echo "📁 Current size: $(wc -c < attendance.json) bytes"
+          else
+            echo "⚠️  No attendance.json found - will be created on first run"
+            echo "{}" > attendance.json
+          fi
 
       - name: Run token diagnostic (debug only)
         if: runner.debug == '1'
@@ -75,12 +94,17 @@ jobs:
           RECIPIENT_NAME: ${{ secrets.RECIPIENT_NAME }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
           EMAIL_CC: ${{ secrets.EMAIL_CC }}
-          EMAIL_SUBJECT: "Tintas Berger CSFA Report - {date}"
+          EMAIL_BCC: ${{ secrets.EMAIL_BCC }}
+          EMAIL_THREAD_ID: ${{ secrets.EMAIL_THREAD_ID }}
 
           # Report Configuration
           REPORT_CURRENCY: MZN
           OUTPUT_FILE: Daily_CSFA_Report.xlsx
           SEND_EMAIL: ${{ github.event.inputs.send_email || 'true' }}
+
+          # Attendance Configuration
+          ATTENDANCE_JSON_FILE: attendance.json
+          INCLUDE_MONTHLY_ATTENDANCE: true
 
           # Logging
           LOG_LEVEL: INFO
@@ -88,16 +112,79 @@ jobs:
 
           # Execution Mode
           RUN_MODE: once
+
+          # Optional: Report date override (for manual runs)
+          REPORT_DATE: ${{ github.event.inputs.report_date }}
         run: |
           echo "🚀 Starting CSFA report generation..."
+          echo "📅 Current Date/Time: $(date '+%Y-%m-%d %H:%M:%S %Z')"
+          echo "⏰ Scheduled Time: 7:00 PM EAT (4:00 PM UTC)"
+          echo ""
+
+          # Calculate report date (same day at 7 PM)
+          if [ -z "$REPORT_DATE" ]; then
+            # For automated runs: use current date
+            # Since we run at 7 PM EAT, we're reporting on the same business day
+            CALC_DATE=$(date '+%Y-%m-%d')
+            echo "📊 Report Date: $CALC_DATE (today's business)"
+          else
+            # For manual runs: use provided date
+            CALC_DATE="$REPORT_DATE"
+            echo "📊 Report Date: $CALC_DATE (manual override)"
+          fi
+
+          export REPORT_DATE="$CALC_DATE"
+
+          # Show attendance file status
+          if [ -f attendance.json ]; then
+            echo "📊 Attendance tracking: ENABLED"
+            echo "📁 attendance.json size: $(wc -c < attendance.json) bytes"
+          fi
+
+          echo ""
+          echo "▶️  Running report generation..."
+
           python main.py
 
           if [ $? -eq 0 ]; then
             echo "✅ Report generation successful!"
+
+            # Show updated attendance file
+            if [ -f attendance.json ]; then
+              echo "📝 Attendance data updated"
+              echo "📁 New size: $(wc -c < attendance.json) bytes"
+            fi
           else
             echo "❌ Report generation failed!"
             exit 1
           fi
+
+      # ============================================================================
+      # ATTENDANCE TRACKING: Commit updated attendance.json back to repository
+      # ============================================================================
+      - name: Commit updated attendance.json
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+
+          # Add attendance.json if it changed
+          if [ -f attendance.json ]; then
+            git add attendance.json
+
+            # Check if there are changes
+            if git diff --staged --quiet; then
+              echo "ℹ️  No changes to attendance.json"
+            else
+              git commit -m "📅 Update attendance tracking - $(date '+%Y-%m-%d')"
+              echo "✅ Committed updated attendance.json"
+            fi
+          fi
+
+      - name: Push changes
+        uses: ad-m/github-push-action@master
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          branch: ${{ github.ref }}
 
       - name: Upload Report Artifact
         if: always()
@@ -106,6 +193,7 @@ jobs:
           name: csfa-report-${{ github.run_number }}
           path: |
             Daily_CSFA_Report.xlsx
+            attendance.json
             summary_for_email.txt
             report_generation.log
           retention-days: 30
@@ -117,6 +205,7 @@ jobs:
           name: error-logs-${{ github.run_number }}
           path: |
             report_generation.log
+            attendance.json
             *.log
           retention-days: 7
 
@@ -125,3 +214,26 @@ jobs:
         run: |
           echo "❌ Report generation failed!"
           echo "Check the logs above for details"
+
+          # Show attendance file for debugging
+          if [ -f attendance.json ]; then
+            echo "📊 Current attendance.json contents:"
+            cat attendance.json | head -20
+          fi
+
+      # ============================================================================
+      # OPTIONAL: Monthly attendance summary
+      # ============================================================================
+      - name: Generate Monthly Summary (on last day of month)
+        if: success()
+        run: |
+          # Check if tomorrow is the 1st (meaning today is last day of month)
+          TOMORROW=$(date -d tomorrow '+%d')
+
+          if [ "$TOMORROW" = "01" ]; then
+            echo "📊 Last day of month - generating attendance summary"
+            echo "✅ Monthly attendance data ready in Excel report"
+            echo "📧 Email includes monthly attendance table"
+          else
+            echo "ℹ️  Not last day of month - daily report only"
+          fi

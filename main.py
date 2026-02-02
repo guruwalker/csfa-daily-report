@@ -62,6 +62,63 @@ logger = setup_logging()
 
 
 # ============================================================================
+# DATE UTILITIES
+# ============================================================================
+
+def get_report_date() -> datetime:
+    """
+    Get the report date from environment or use today.
+
+    Since the report runs at 7 PM EAT, we report on the same business day.
+    For example:
+    - Monday 7 PM → Monday's report
+    - Friday 7 PM → Friday's report
+
+    Returns:
+        datetime object for the report date
+    """
+    date_str = os.getenv("REPORT_DATE", "")
+
+    if date_str:
+        try:
+            return datetime.strptime(date_str, "%Y-%m-%d")
+        except ValueError:
+            logger.warning(f"⚠️ Invalid REPORT_DATE format: {date_str}, using today")
+
+    # Default to today (same business day at 7 PM)
+    return datetime.now()
+
+
+def format_date_for_api(dt: datetime) -> str:
+    """
+    Format date for API order endpoint.
+    Example: Mon+Dec+15+2025
+
+    Args:
+        dt: datetime object
+
+    Returns:
+        Formatted date string like "Mon+Dec+15+2025"
+    """
+    return dt.strftime("%a+%b+%d+%Y")
+
+
+def format_date_range(dt: datetime) -> str:
+    """
+    Format date range for API (single day).
+    Example: 2025-12-15 - 2025-12-15
+
+    Args:
+        dt: datetime object
+
+    Returns:
+        Date range string like "2025-12-15 - 2025-12-15"
+    """
+    date_str = dt.strftime("%Y-%m-%d")
+    return f"{date_str} - {date_str}"
+
+
+# ============================================================================
 # CONFIGURATION
 # ============================================================================
 
@@ -74,10 +131,6 @@ class Config:
     SAT_SESSION = os.getenv("SAT_SESSION")
     SAT_USER_ID = os.getenv("SAT_USER_ID", "57")
     XSRF_TOKEN = os.getenv("XSRF_TOKEN")
-
-    # Date configuration
-    ORDER_DATE = os.getenv("ORDER_DATE")
-    ORDER_DATE_RANGE = os.getenv("ORDER_DATE_RANGE")
 
     # Other config
     COUNTRY_ID = int(os.getenv("COUNTRY_ID", "149"))
@@ -111,53 +164,48 @@ class Config:
                     "Verify it's the complete token."
                 )
 
-    # @classmethod
-    # def get_dates(cls) -> Tuple[str, str, str]:
-    #     """
-    #     Get dates for report.
-    #     Returns: (order_date, order_date_range, display_date)
-    #     """
-    #     today = datetime.now()  # Changed from yesterday to today
-    #     date_str = today.strftime("%Y-%m-%d")
-
-    #     order_date = cls.ORDER_DATE or today.strftime("%a+%b+%d+%Y")
-    #     order_date_range = cls.ORDER_DATE_RANGE or f"{date_str} - {date_str}"
-    #     display_date = date_str
-
-    #     return order_date, order_date_range, display_date
     @classmethod
-    def get_dates(cls) -> Tuple[str, str, str]:
+    def get_dates(cls) -> Tuple[str, str, str, datetime]:
         """
-        Get dates for report from environment variables.
-        Returns: (order_date, order_date_range, display_date)
+        Get dates for report - AUTOMATICALLY calculated or from environment.
 
-        Raises:
-            ValueError: If ORDER_DATE or ORDER_DATE_RANGE is not set
+        This method automatically calculates dates based on the current day,
+        making it suitable for automated deployment.
+
+        Returns:
+            Tuple of (order_date, order_date_range, display_date, report_date)
+            - order_date: API format like "Mon+Dec+15+2025"
+            - order_date_range: Range format like "2025-12-15 - 2025-12-15"
+            - display_date: Display format like "2025-12-15"
+            - report_date: datetime object for the report
         """
-        # Require dates to be set in .env
-        if not cls.ORDER_DATE:
-            raise ValueError(
-                "ORDER_DATE not set in environment variables. "
-                "Please set ORDER_DATE in your .env file (e.g., Mon+Dec+15+2025)"
-            )
+        # Get report date (today by default, or from REPORT_DATE env var)
+        report_date = get_report_date()
 
-        if not cls.ORDER_DATE_RANGE:
-            raise ValueError(
-                "ORDER_DATE_RANGE not set in environment variables. "
-                "Please set ORDER_DATE_RANGE in your .env file (e.g., 2025-12-15 - 2025-12-15)"
-            )
+        # Allow manual override via environment variables (for testing/debugging)
+        manual_order_date = os.getenv("ORDER_DATE")
+        manual_date_range = os.getenv("ORDER_DATE_RANGE")
 
-        order_date = cls.ORDER_DATE
-        order_date_range = cls.ORDER_DATE_RANGE
+        if manual_order_date and manual_date_range:
+            logger.info("📝 Using manual date override from environment variables")
+            order_date = manual_order_date
+            order_date_range = manual_date_range
+            try:
+                display_date = manual_date_range.split(" - ")[0].strip()
+            except:
+                display_date = report_date.strftime("%Y-%m-%d")
+        else:
+            # AUTOMATIC: Calculate dates from report_date
+            logger.info("🤖 Automatically calculating dates for today's report")
+            order_date = format_date_for_api(report_date)
+            order_date_range = format_date_range(report_date)
+            display_date = report_date.strftime("%Y-%m-%d")
 
-        # Extract display date from ORDER_DATE_RANGE (first date)
-        try:
-            display_date = order_date_range.split(" - ")[0].strip()
-        except:
-            # Fallback: try to parse from ORDER_DATE
-            display_date = order_date.replace("+", " ")
+        logger.info(f"📅 Report Date: {display_date}")
+        logger.info(f"📅 Order Date (API): {order_date}")
+        logger.info(f"📅 Date Range: {order_date_range}")
 
-        return order_date, order_date_range, display_date
+        return order_date, order_date_range, display_date, report_date
 
 
 # ============================================================================
@@ -312,9 +360,8 @@ def generate_and_send_report() -> bool:
         logger.info("🔍 Validating configuration...")
         Config.validate()
 
-        # Get dates
-        order_date, order_date_range, display_date = Config.get_dates()
-        logger.info(f"📅 Generating report for: {display_date}")
+        # Get dates (automatically calculated)
+        order_date, order_date_range, display_date, report_date = Config.get_dates()
         logger.info("=" * 70)
 
         # Fetch data
@@ -324,7 +371,9 @@ def generate_and_send_report() -> bool:
         # Generate report
         logger.info("\n📊 Generating detailed Excel report...")
         report_config = ReportConfig.from_env()
-        generate_detailed_report(visits_data, orders_data)
+
+        # Pass both report_date (datetime) and report_config to generate_detailed_report
+        generate_detailed_report(visits_data, orders_data, report_date, report_config)
 
         # Send email (if configured)
         if Config.SEND_EMAIL:
