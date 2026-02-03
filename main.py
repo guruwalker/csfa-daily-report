@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from api_client import get_orders, get_timesheet, get_order_details
 from generate_detailed_report import generate_detailed_report, ReportConfig
 from send_report import send_report
+from holiday_checker import is_holiday
 
 # Load environment variables
 load_dotenv()
@@ -169,15 +170,8 @@ class Config:
         """
         Get dates for report - AUTOMATICALLY calculated or from environment.
 
-        This method automatically calculates dates based on the current day,
-        making it suitable for automated deployment.
-
         Returns:
             Tuple of (order_date, order_date_range, display_date, report_date)
-            - order_date: API format like "Mon+Dec+15+2025"
-            - order_date_range: Range format like "2025-12-15 - 2025-12-15"
-            - display_date: Display format like "2025-12-15"
-            - report_date: datetime object for the report
         """
         # Get report date (today by default, or from REPORT_DATE env var)
         report_date = get_report_date()
@@ -211,19 +205,6 @@ class Config:
 # ============================================================================
 # API PARAMETER BUILDERS
 # ============================================================================
-
-def build_orders_query_string(date: str, country_id: int = 149) -> str:
-    """Build query string for orders API."""
-    return (
-        f"?start_date={date}"
-        f"&end_date={date}"
-        f"&country_id[]={country_id}"
-        f"&stage=0"
-        f"&page=1"
-        f"&per_page=25"
-        f"&orderWorkflowId=1"
-    )
-
 
 def build_timesheet_headers() -> Dict:
     """Build headers for timesheet API."""
@@ -287,31 +268,48 @@ def build_timesheet_params(date_range: str) -> Dict:
     }
 
 
+def build_orders_headers() -> Dict:
+    """Build headers for orders API."""
+    return {
+        "Host": Config.HOST,
+        "Referer": f"https://{Config.HOST}/orders",
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Accept-Encoding": "gzip, deflate, br, zstd",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Connection": "keep-alive",
+        "sat_user_id": Config.SAT_USER_ID,
+        "laravel_token": Config.ACCESS_TOKEN,
+        "XSRF-TOKEN": Config.XSRF_TOKEN,
+        "sat_session": Config.SAT_SESSION,
+    }
+
+
+def build_orders_cookies() -> Dict:
+    """Build cookies for orders API."""
+    return {
+        "sat_user_id": Config.SAT_USER_ID,
+        "laravel_token": Config.ACCESS_TOKEN,
+        "XSRF-TOKEN": Config.XSRF_TOKEN,
+        "sat_session": Config.SAT_SESSION,
+    }
+
+
+def build_orders_params(order_date: str, order_date_range: str) -> Dict:
+    """Build parameters for orders API."""
+    return {
+        "start_date": order_date,
+        "end_date": order_date,
+        "country_id[]": str(Config.COUNTRY_ID),
+        "stage": "0",
+        "page": "1",
+        "per_page": "25",
+        "orderWorkflowId": "1",
+    }
+
+
 # ============================================================================
 # DATA FETCHING
 # ============================================================================
-
-def fetch_orders_data(order_date: str) -> List[Dict]:
-    """
-    Fetch orders data from API.
-
-    Args:
-        order_date: Date string for orders
-
-    Returns:
-        List of order dictionaries
-    """
-    logger.info("📦 Fetching orders...")
-    try:
-        query_string = build_orders_query_string(order_date, Config.COUNTRY_ID)
-        orders_response = get_orders(Config.ACCESS_TOKEN, query_string)
-        orders_data = orders_response.get('data', [])
-        logger.info(f"✅ Found {len(orders_data)} orders")
-        return orders_data
-    except Exception as e:
-        logger.error(f"❌ Failed to fetch orders: {e}", exc_info=True)
-        raise
-
 
 def fetch_timesheet_data(order_date_range: str) -> List[Dict]:
     """
@@ -321,7 +319,7 @@ def fetch_timesheet_data(order_date_range: str) -> List[Dict]:
         order_date_range: Date range string for timesheet
 
     Returns:
-        List of visit dictionaries
+        List of visit dictionaries (empty list if no data or error)
     """
     logger.info("⏰ Fetching timesheet data...")
     try:
@@ -335,11 +333,55 @@ def fetch_timesheet_data(order_date_range: str) -> List[Dict]:
             timesheet_params
         )
         visits_data = timesheet_response.get('data', [])
-        logger.info(f"✅ Found {len(visits_data)} visits")
+
+        if not visits_data:
+            logger.warning("⚠️  No visits found for this date (holiday or no activity)")
+        else:
+            logger.info(f"✅ Found {len(visits_data)} visits")
+
         return visits_data
+
     except Exception as e:
         logger.error(f"❌ Failed to fetch timesheet: {e}", exc_info=True)
-        raise
+        logger.warning("⚠️  Continuing with empty visits data")
+        return []
+
+
+def fetch_orders_data(order_date: str, order_date_range: str) -> List[Dict]:
+    """
+    Fetch orders data from API.
+
+    Args:
+        order_date: Single date for orders
+        order_date_range: Date range for orders
+
+    Returns:
+        List of order dictionaries (empty list if no data or error)
+    """
+    logger.info("📦 Fetching orders data...")
+    try:
+        orders_headers = build_orders_headers()
+        orders_cookies = build_orders_cookies()
+        orders_params = build_orders_params(order_date, order_date_range)
+
+        orders_response = get_orders(
+            orders_headers,
+            orders_cookies,
+            orders_params
+        )
+        orders_data = orders_response.get('data', [])
+
+        if not orders_data:
+            logger.warning("⚠️  No orders found for this date (holiday or no activity)")
+        else:
+            logger.info(f"✅ Found {len(orders_data)} orders")
+
+        return orders_data
+
+    except Exception as e:
+        logger.error(f"❌ Failed to fetch orders: {e}", exc_info=True)
+        logger.warning("⚠️  Continuing with empty orders data")
+        return []
 
 
 # ============================================================================
@@ -364,8 +406,37 @@ def generate_and_send_report() -> bool:
         order_date, order_date_range, display_date, report_date = Config.get_dates()
         logger.info("=" * 70)
 
+        # Check if this is a holiday
+        if is_holiday(report_date):
+            logger.info("🎉 Holiday detected - skipping data fetch")
+            logger.info("📝 Generating holiday report...")
+
+            # Generate holiday report (no data needed)
+            report_config = ReportConfig.from_env()
+            generate_detailed_report([], [], report_date, report_config)
+
+            # Send email (if configured)
+            if Config.SEND_EMAIL:
+                logger.info("\n📧 Sending holiday report email...")
+                email_success = send_report(date_str=display_date)
+                if not email_success:
+                    logger.warning("⚠️ Email sending failed, but report was generated")
+
+            # Calculate execution time
+            duration = (datetime.now() - start_time).total_seconds()
+
+            logger.info("\n" + "=" * 70)
+            logger.info(f"✅ Holiday report generation complete!")
+            logger.info(f"⏱️  Total execution time: {duration:.2f} seconds")
+            logger.info(f"📁 Report saved: {report_config.output_file}")
+
+            return True
+
+        # Not a holiday - proceed with normal data fetch
+        logger.info("📊 Regular business day - fetching data...")
+
         # Fetch data
-        orders_data = fetch_orders_data(order_date)
+        orders_data = fetch_orders_data(order_date, order_date_range)
         visits_data = fetch_timesheet_data(order_date_range)
 
         # Generate report
@@ -383,7 +454,7 @@ def generate_and_send_report() -> bool:
                 logger.warning("⚠️ Email sending failed, but report was generated")
         else:
             logger.info("📧 Email sending disabled (SEND_EMAIL=false)")
-            email_success = True  # Don't fail if email is disabled
+            email_success = True
 
         # Calculate execution time
         duration = (datetime.now() - start_time).total_seconds()
@@ -423,7 +494,7 @@ def main() -> int:
         return 0 if success else 1
     except KeyboardInterrupt:
         logger.warning("\n⚠️ Process interrupted by user")
-        return 130  # Standard exit code for SIGINT
+        return 130
     except Exception as e:
         logger.error(f"\n❌ Unexpected error: {e}", exc_info=True)
         return 1

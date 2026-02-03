@@ -8,15 +8,10 @@ import json
 import os
 import logging
 from datetime import datetime
-from typing import Dict, List, Set
-from pathlib import Path
+from typing import Dict, List
 
 logger = logging.getLogger(__name__)
 
-
-# ============================================================================
-# ATTENDANCE DATA STRUCTURE
-# ============================================================================
 
 class AttendanceTracker:
     """
@@ -29,21 +24,13 @@ class AttendanceTracker:
                 "John Doe": [2, 5, 13, 18],
                 "Jane Smith": [],
                 "Mike Johnson": [1, 2, 3, 15, 20]
-            },
-            "03": {
-                ...
             }
         }
     }
     """
 
     def __init__(self, json_file: str = "attendance.json"):
-        """
-        Initialize attendance tracker.
-
-        Args:
-            json_file: Path to JSON file for storing attendance data
-        """
+        """Initialize attendance tracker."""
         self.json_file = json_file
         self.data = self._load_data()
 
@@ -76,13 +63,7 @@ class AttendanceTracker:
             logger.error(f"Error saving attendance data: {e}")
 
     def mark_absent(self, salesperson: str, date: datetime) -> None:
-        """
-        Mark a salesperson as absent on a specific date.
-
-        Args:
-            salesperson: Name of the salesperson
-            date: Date object for the absent day
-        """
+        """Mark a salesperson as absent on a specific date."""
         year = str(date.year)
         month = f"{date.month:02d}"
         day = date.day
@@ -98,20 +79,12 @@ class AttendanceTracker:
         # Add day if not already present
         if day not in self.data[year][month][salesperson]:
             self.data[year][month][salesperson].append(day)
-            self.data[year][month][salesperson].sort()  # Keep sorted
+            self.data[year][month][salesperson].sort()
             logger.info(f"Marked {salesperson} absent on {date.strftime('%Y-%m-%d')}")
             self._save_data()
-        else:
-            logger.debug(f"{salesperson} already marked absent on {date.strftime('%Y-%m-%d')}")
 
     def mark_present(self, salesperson: str, date: datetime) -> None:
-        """
-        Mark a salesperson as present (remove from absent list if exists).
-
-        Args:
-            salesperson: Name of the salesperson
-            date: Date object for the present day
-        """
+        """Mark a salesperson as present (remove from absent list if exists)."""
         year = str(date.year)
         month = f"{date.month:02d}"
         day = date.day
@@ -123,21 +96,11 @@ class AttendanceTracker:
             day in self.data[year][month][salesperson]):
 
             self.data[year][month][salesperson].remove(day)
-            logger.info(f"Marked {salesperson} present on {date.strftime('%Y-%m-%d')} (removed from absent list)")
+            logger.info(f"Marked {salesperson} present on {date.strftime('%Y-%m-%d')}")
             self._save_data()
 
     def get_absent_days(self, salesperson: str, year: int, month: int) -> List[int]:
-        """
-        Get list of absent days for a salesperson in a specific month.
-
-        Args:
-            salesperson: Name of the salesperson
-            year: Year (e.g., 2026)
-            month: Month (1-12)
-
-        Returns:
-            List of day numbers when salesperson was absent
-        """
+        """Get list of absent days for a salesperson in a specific month."""
         year_str = str(year)
         month_str = f"{month:02d}"
 
@@ -149,16 +112,7 @@ class AttendanceTracker:
         return []
 
     def get_monthly_summary(self, year: int, month: int) -> Dict[str, List[int]]:
-        """
-        Get attendance summary for all salespeople in a specific month.
-
-        Args:
-            year: Year (e.g., 2026)
-            month: Month (1-12)
-
-        Returns:
-            Dictionary mapping salesperson names to their absent days
-        """
+        """Get attendance summary for all salespeople in a specific month."""
         year_str = str(year)
         month_str = f"{month:02d}"
 
@@ -168,15 +122,7 @@ class AttendanceTracker:
         return {}
 
     def ensure_salesperson_exists(self, salesperson: str, year: int, month: int) -> None:
-        """
-        Ensure a salesperson exists in the tracking for a given month.
-        Initializes with empty absent days list if they don't exist.
-
-        Args:
-            salesperson: Name of the salesperson
-            year: Year (e.g., 2026)
-            month: Month (1-12)
-        """
+        """Ensure a salesperson exists in the tracking for a given month."""
         year_str = str(year)
         month_str = f"{month:02d}"
 
@@ -189,16 +135,7 @@ class AttendanceTracker:
             self._save_data()
 
     def is_absent(self, salesperson: str, date: datetime) -> bool:
-        """
-        Check if a salesperson is marked as absent on a specific date.
-
-        Args:
-            salesperson: Name of the salesperson
-            date: Date to check
-
-        Returns:
-            True if marked absent, False otherwise
-        """
+        """Check if a salesperson is marked as absent on a specific date."""
         year = str(date.year)
         month = f"{date.month:02d}"
         day = date.day
@@ -209,38 +146,17 @@ class AttendanceTracker:
                 day in self.data[year][month][salesperson])
 
     def get_total_absent_days(self, salesperson: str, year: int, month: int) -> int:
-        """
-        Get total number of absent days for a salesperson in a month.
-
-        Args:
-            salesperson: Name of the salesperson
-            year: Year (e.g., 2026)
-            month: Month (1-12)
-
-        Returns:
-            Number of absent days
-        """
+        """Get total number of absent days for a salesperson in a month."""
         absent_days = self.get_absent_days(salesperson, year, month)
         return len(absent_days)
 
     def format_attendance_status(self, salesperson: str, year: int, month: int) -> str:
-        """
-        Format attendance status as a human-readable string.
-
-        Args:
-            salesperson: Name of the salesperson
-            year: Year (e.g., 2026)
-            month: Month (1-12)
-
-        Returns:
-            Formatted string like "Perfect attendance" or "No attendance on date: 2, 13, 18"
-        """
+        """Format attendance status as a human-readable string."""
         absent_days = self.get_absent_days(salesperson, year, month)
 
         if not absent_days:
             return "Perfect attendance ✓"
 
-        # Format the days
         days_str = ", ".join(map(str, absent_days))
         count = len(absent_days)
 
@@ -250,41 +166,24 @@ class AttendanceTracker:
             return f"No attendance on dates: {days_str} ({count} days)"
 
 
-# ============================================================================
-# HELPER FUNCTIONS
-# ============================================================================
-
 def update_attendance_for_date(
     tracker: AttendanceTracker,
     salespeople_present: List[str],
     all_salespeople: List[str],
     date: datetime
 ) -> None:
-    """
-    Update attendance for a specific date.
-
-    Args:
-        tracker: AttendanceTracker instance
-        salespeople_present: List of salespeople who used the app
-        all_salespeople: Complete list of all salespeople
-        date: Date to update attendance for
-    """
+    """Update attendance for a specific date."""
     salespeople_present_set = set(salespeople_present)
 
     for salesperson in all_salespeople:
-        # Ensure salesperson exists in tracking
         tracker.ensure_salesperson_exists(salesperson, date.year, date.month)
 
         if salesperson in salespeople_present_set:
-            # Mark present (remove from absent list if mistakenly added)
             tracker.mark_present(salesperson, date)
         else:
-            # Mark absent
             tracker.mark_absent(salesperson, date)
 
     logger.info(f"Updated attendance for {date.strftime('%Y-%m-%d')}")
-    logger.info(f"  Present: {len(salespeople_present_set)} salespeople")
-    logger.info(f"  Absent: {len(all_salespeople) - len(salespeople_present_set)} salespeople")
 
 
 def generate_monthly_attendance_summary(
@@ -293,18 +192,7 @@ def generate_monthly_attendance_summary(
     year: int = None,
     month: int = None
 ) -> List[Dict[str, str]]:
-    """
-    Generate monthly attendance summary for email/report.
-
-    Args:
-        tracker: AttendanceTracker instance
-        all_salespeople: Complete list of all salespeople
-        year: Year (defaults to current year)
-        month: Month (defaults to current month)
-
-    Returns:
-        List of dictionaries with salesperson name and attendance status
-    """
+    """Generate monthly attendance summary for email/report."""
     now = datetime.now()
     year = year or now.year
     month = month or now.month
@@ -320,31 +208,3 @@ def generate_monthly_attendance_summary(
         })
 
     return summary
-
-
-# ============================================================================
-# EXAMPLE USAGE
-# ============================================================================
-
-if __name__ == "__main__":
-    # Example usage
-    logging.basicConfig(level=logging.INFO)
-
-    tracker = AttendanceTracker()
-
-    # Example: Mark some people absent
-    date = datetime(2026, 2, 13)
-    tracker.mark_absent("John Doe", date)
-    tracker.mark_absent("Jane Smith", datetime(2026, 2, 5))
-    tracker.mark_absent("John Doe", datetime(2026, 2, 18))
-
-    # Get monthly summary
-    summary = generate_monthly_attendance_summary(
-        tracker,
-        ["John Doe", "Jane Smith", "Mike Johnson"],
-        year=2026,
-        month=2
-    )
-
-    for entry in summary:
-        print(f"{entry['Salesperson']}: {entry['Attendance']}")

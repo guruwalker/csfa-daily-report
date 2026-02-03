@@ -25,6 +25,8 @@ except ImportError:
 from api_client import get_order_details
 from config import is_excluded_account, get_all_salespeople, normalize_name
 from attendance_tracker import AttendanceTracker, update_attendance_for_date, generate_monthly_attendance_summary
+from date_utils import get_report_date
+from holiday_checker import HolidayChecker
 
 # Configure logging
 logging.basicConfig(
@@ -132,6 +134,33 @@ class DataProcessor:
         df_orders: pd.DataFrame
     ) -> pd.DataFrame:
         """Merge visits and orders data with fallback logic."""
+        # Handle empty dataframes
+        if df_visits.empty and df_orders.empty:
+            # Both empty - return empty dataframe with expected columns
+            return pd.DataFrame(columns=[
+                "customer_name_final",
+                "sales_rep_final",
+                "time_spent",
+                "order_value"
+            ])
+
+        if df_visits.empty:
+            # No visits - use orders data
+            df_final = df_orders.copy()
+            df_final["customer_name_final"] = df_final["customer_name"]
+            df_final["sales_rep_final"] = df_final["sales_rep"]
+            df_final["time_spent"] = ""
+            return df_final
+
+        if df_orders.empty:
+            # No orders - use visits data
+            df_final = df_visits.copy()
+            df_final["customer_name_final"] = df_final["customer_name"]
+            df_final["sales_rep_final"] = df_final["sales_rep"]
+            df_final["order_value"] = 0.0
+            return df_final
+
+        # Both have data - proceed with merge
         # Merge by ERP code
         df_merge_code = pd.merge(
             df_visits,
@@ -174,6 +203,18 @@ class DataProcessor:
         df_orders: pd.DataFrame
     ) -> pd.DataFrame:
         """Find customers who were called but not visited."""
+        # Handle empty dataframes
+        if df_orders.empty:
+            # No orders, so no calls
+            return pd.DataFrame(columns=["customer_called", "sales_rep"])
+
+        if df_visits.empty:
+            # No visits, so all orders are calls
+            df_called = df_orders.copy()
+            df_called["customer_called"] = df_called["customer_name"]
+            return df_called
+
+        # Both have data - find calls (orders without visits)
         visited_customers = set(df_visits["customer_name"])
         df_called = df_orders[~df_orders["customer_name"].isin(visited_customers)].copy()
         df_called["customer_called"] = df_called["customer_name"]
@@ -743,6 +784,63 @@ class RepSheetGenerator:
 
 
 # ============================================================================
+# HOLIDAY REPORT GENERATOR
+# ============================================================================
+
+def _generate_holiday_report(report_date: datetime, config: ReportConfig) -> None:
+    """
+    Generate a special holiday report with centered message.
+
+    Args:
+        report_date: The holiday date
+        config: Report configuration
+    """
+    import pandas as pd
+    from openpyxl.styles import Font, Alignment
+
+    # Remove old file if exists
+    if os.path.exists(config.output_file):
+        os.remove(config.output_file)
+
+    logger.info("📝 Creating holiday report...")
+
+    # Create a simple dataframe with holiday message
+    holiday_message = f"🎉 PUBLIC HOLIDAY - {report_date.strftime('%A, %B %d, %Y')}"
+    no_data_message = "No CSFA activities recorded on this date"
+
+    # Create Excel file with holiday message
+    with pd.ExcelWriter(config.output_file, engine="openpyxl") as writer:
+        # Create a simple sheet
+        df_holiday = pd.DataFrame({
+            "": [holiday_message, "", no_data_message]
+        })
+
+        df_holiday.to_excel(writer, index=False, sheet_name="Holiday Notice", header=False)
+
+        # Get the worksheet to apply formatting
+        ws = writer.sheets["Holiday Notice"]
+
+        # Merge cells for holiday message (row 1)
+        ws.merge_cells('A1:E1')
+        cell_a1 = ws['A1']
+        cell_a1.font = Font(name="Times New Roman", size=18, bold=True, color="FF0000")
+        cell_a1.alignment = Alignment(horizontal="center", vertical="center")
+        ws.row_dimensions[1].height = 40
+
+        # Merge cells for no data message (row 3)
+        ws.merge_cells('A3:E3')
+        cell_a3 = ws['A3']
+        cell_a3.font = Font(name="Times New Roman", size=14, italic=True)
+        cell_a3.alignment = Alignment(horizontal="center", vertical="center")
+        ws.row_dimensions[3].height = 30
+
+        # Set column width
+        ws.column_dimensions['A'].width = 100
+
+    logger.info(f"✅ Holiday report generated: {config.output_file}")
+
+
+# ============================================================================
 # MAIN REPORT GENERATOR
 # ============================================================================
 
@@ -758,21 +856,30 @@ def generate_detailed_report(
     Args:
         visits_data: List of visit records
         orders_data: List of order records
-        report_date: Date for which the report is being generated (defaults to today)
+        report_date: Date for which the report is being generated (defaults to TODAY)
         config: Optional configuration object
     """
     if config is None:
         config = ReportConfig.from_env()
 
     if report_date is None:
-        report_date = datetime.now()
+        # Use today's date by default (reports run at end of business day)
+        report_date = get_report_date()
 
     access_token = os.getenv("ACCESS_TOKEN")
     if not access_token:
         raise ValueError("ACCESS_TOKEN not found in environment variables")
 
     logger.info(f"🚀 Starting report generation: {config.output_file}")
-    logger.info(f"📅 Report date: {report_date.strftime('%Y-%m-%d')}")
+    logger.info(f"📅 Report date: {report_date.strftime('%A, %Y-%m-%d')}")
+    logger.info(f"⏰ Generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+    # Check if this is a holiday
+    holiday_checker = HolidayChecker(config.attendance_json_file.replace("attendance.json", "holidays.json"))
+    if holiday_checker.is_holiday(report_date):
+        logger.info("🎉 Holiday detected - generating special holiday report")
+        _generate_holiday_report(report_date, config)
+        return
 
     # Remove old file
     if os.path.exists(config.output_file):
@@ -792,6 +899,12 @@ def generate_detailed_report(
     logger.info("📊 Processing data...")
     df_visits = processor.clean_visits(visits_data)
     df_orders = processor.clean_orders(orders_data)
+
+    # Check if we have any data
+    if df_visits.empty and df_orders.empty:
+        logger.warning("⚠️  No visits or orders data - generating report with attendance only")
+        logger.warning("⚠️  This is normal for holidays or weekends")
+
     df_final = processor.merge_visits_orders(df_visits, df_orders)
     df_called = processor.get_called_customers(df_visits, df_orders)
     reps = processor.get_sales_reps(df_final, df_called)

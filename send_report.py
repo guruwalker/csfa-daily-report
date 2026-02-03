@@ -3,6 +3,7 @@ Enhanced Email Module for CSFA Report
 Sends daily reports with professional formatting and error handling.
 UPDATED: Focus on customer visits, not revenue
 UPDATED: Added attendance tracking tables
+UPDATED: Simplified holiday email format
 """
 
 import os
@@ -16,6 +17,8 @@ import mimetypes
 import pandas as pd
 from dotenv import load_dotenv
 import re
+
+from holiday_checker import is_holiday
 
 load_dotenv()
 
@@ -262,9 +265,6 @@ class EmailBuilder:
         except:
             formatted_date = date_str
 
-        # Get current time for automation message
-        current_time = datetime.now().strftime("%I:%M %p")
-
         return f"""
         <!DOCTYPE html>
         <html>
@@ -300,7 +300,7 @@ class EmailBuilder:
                 <p>Kind regards,<br>
                 <strong>{self.config.SENDER_NAME}</strong></p>
 
-                <p><em>This is an automated report sent at {current_time} on {formatted_date}.</em></p>
+                <p><em>This is an automated report sent on {formatted_date}.</em></p>
             </div>
         </body>
         </html>
@@ -681,6 +681,115 @@ def _get_monthly_attendance_sheet_name(excel_file: str) -> str:
     return None
 
 
+def _send_holiday_report(excel_file: str, date_str: str) -> bool:
+    """
+    Send simplified holiday report email.
+
+    Args:
+        excel_file: Path to Excel file
+        date_str: Date string
+
+    Returns:
+        True if successful
+    """
+    try:
+        # Parse date
+        report_date = datetime.strptime(date_str, "%Y-%m-%d")
+        day_name = report_date.strftime("%A")
+        formatted_date = f"{day_name}, {date_str}"
+
+        # Build simple holiday email (no unnecessary boilerplate)
+        holiday_body = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <style>
+                body {{
+                    font-family: Arial, sans-serif;
+                    line-height: 1.6;
+                    color: #333;
+                }}
+            </style>
+        </head>
+        <body>
+            <p>Greetings {EmailConfig.RECIPIENT_NAME},</p>
+
+            <p>{formatted_date} was a public holiday, no CSFA activity recorded.</p>
+
+            <p>Kind regards,<br>
+            <strong>{EmailConfig.SENDER_NAME}</strong></p>
+        </body>
+        </html>
+        """
+
+        # Build email message directly (bypass the normal builder to avoid boilerplate)
+        msg = EmailMessage()
+
+        # Set headers
+        msg["From"] = EmailConfig.SENDER_EMAIL
+        msg["To"] = ", ".join(EmailConfig.clean_recipients(EmailConfig.TO_RECIPIENTS))
+
+        cc_recipients = EmailConfig.clean_recipients(EmailConfig.CC_RECIPIENTS)
+        if cc_recipients:
+            msg["Cc"] = ", ".join(cc_recipients)
+
+        bcc_recipients = EmailConfig.clean_recipients(EmailConfig.BCC_RECIPIENTS)
+        if bcc_recipients:
+            msg["Bcc"] = ", ".join(bcc_recipients)
+
+        # Subject with [Holiday] prefix for easy identification
+        import time
+        thread_id = EmailConfig.EMAIL_THREAD_ID
+        base_subject = EmailConfig.EMAIL_SUBJECT_TEMPLATE.replace("{date}", date_str)
+
+        if thread_id:
+            subject = f"Re: {base_subject} [Holiday]"
+        else:
+            subject = f"{base_subject} [Holiday]"
+
+        msg["Subject"] = subject
+
+        # Threading headers
+        if not thread_id:
+            timestamp = str(int(time.time() * 1000))
+            hostname = EmailConfig.SENDER_EMAIL.split("@")[1]
+            message_id = f"<csfa-report-{timestamp}@{hostname}>"
+            msg["Message-ID"] = message_id
+            logger.info(f"📧 Generated new Message-ID: {message_id}")
+        else:
+            msg["In-Reply-To"] = thread_id
+            msg["References"] = thread_id
+            logger.info(f"📧 Threading holiday email to: {thread_id}")
+
+        # Add HTML body
+        msg.add_alternative(holiday_body, subtype="html")
+
+        # Attach Excel file if it exists
+        if os.path.exists(excel_file):
+            with open(excel_file, "rb") as f:
+                msg.add_attachment(
+                    f.read(),
+                    maintype="application",
+                    subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    filename=os.path.basename(excel_file)
+                )
+            logger.info(f"✅ Attached: {os.path.basename(excel_file)}")
+
+        # Send email
+        sender = EmailSender(EmailConfig)
+        success = sender.send(msg)
+
+        if success:
+            logger.info("🎉 Holiday report email sent successfully!")
+
+        return success
+
+    except Exception as e:
+        logger.error(f"❌ Error sending holiday report: {e}", exc_info=True)
+        return False
+
+
 # ============================================================================
 # MAIN REPORT SENDER
 # ============================================================================
@@ -719,6 +828,16 @@ def send_report(
             logger.error(f"❌ Excel file not found: {excel_file}")
             return False
 
+        # Check if this is a holiday report
+        try:
+            report_date = datetime.strptime(date_str, "%Y-%m-%d")
+            if is_holiday(report_date):
+                logger.info("🎉 Holiday detected - sending simplified holiday email")
+                return _send_holiday_report(excel_file, date_str)
+        except ValueError:
+            pass  # If date parsing fails, continue with normal report
+
+        # Normal report processing continues here...
         # Read summary sheet
         logger.info(f"📖 Reading summary from sheet: {summary_sheet}")
         try:
@@ -772,7 +891,6 @@ def send_report(
             logger.info("🎨 Generating monthly attendance table...")
 
             # Check if attendance data has any actual records
-            # If "Attendance" column shows "No attendance recorded yet" for all rows
             has_actual_attendance = False
             if "Attendance" in df_monthly_attendance.columns:
                 has_actual_attendance = not all(

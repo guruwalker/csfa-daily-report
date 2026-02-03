@@ -113,36 +113,18 @@ jobs:
           # Execution Mode
           RUN_MODE: once
 
-          # Optional: Report date override (for manual runs)
+          # Optional: Report date override
           REPORT_DATE: ${{ github.event.inputs.report_date }}
         run: |
           echo "🚀 Starting CSFA report generation..."
-          echo "📅 Current Date/Time: $(date '+%Y-%m-%d %H:%M:%S %Z')"
-          echo "⏰ Scheduled Time: 7:00 PM EAT (4:00 PM UTC)"
-          echo ""
-
-          # Calculate report date (same day at 7 PM)
-          if [ -z "$REPORT_DATE" ]; then
-            # For automated runs: use current date
-            # Since we run at 7 PM EAT, we're reporting on the same business day
-            CALC_DATE=$(date '+%Y-%m-%d')
-            echo "📊 Report Date: $CALC_DATE (today's business)"
-          else
-            # For manual runs: use provided date
-            CALC_DATE="$REPORT_DATE"
-            echo "📊 Report Date: $CALC_DATE (manual override)"
-          fi
-
-          export REPORT_DATE="$CALC_DATE"
+          echo "📅 Date: $(date '+%Y-%m-%d %H:%M:%S %Z')"
+          echo "⏰ Time: 7:00 PM EAT (4:00 PM UTC)"
 
           # Show attendance file status
           if [ -f attendance.json ]; then
             echo "📊 Attendance tracking: ENABLED"
             echo "📁 attendance.json size: $(wc -c < attendance.json) bytes"
           fi
-
-          echo ""
-          echo "▶️  Running report generation..."
 
           python main.py
 
