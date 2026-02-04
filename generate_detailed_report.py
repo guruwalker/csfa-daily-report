@@ -805,7 +805,7 @@ def _generate_holiday_report(report_date: datetime, config: ReportConfig) -> Non
     logger.info("📝 Creating holiday report...")
 
     # Create a simple dataframe with holiday message
-    holiday_message = f"🎉 PUBLIC HOLIDAY - {report_date.strftime('%A, %B %d, %Y')}"
+    holiday_message = f" PUBLIC HOLIDAY - {report_date.strftime('%A, %B %d, %Y')}"
     no_data_message = "No CSFA activities recorded on this date"
 
     # Create Excel file with holiday message
@@ -877,7 +877,7 @@ def generate_detailed_report(
     # Check if this is a holiday
     holiday_checker = HolidayChecker(config.attendance_json_file.replace("attendance.json", "holidays.json"))
     if holiday_checker.is_holiday(report_date):
-        logger.info("🎉 Holiday detected - generating special holiday report")
+        logger.info(" Holiday detected - generating special holiday report")
         _generate_holiday_report(report_date, config)
         return
 

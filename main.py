@@ -408,7 +408,7 @@ def generate_and_send_report() -> bool:
 
         # Check if this is a holiday
         if is_holiday(report_date):
-            logger.info("🎉 Holiday detected - skipping data fetch")
+            logger.info(" Holiday detected - skipping data fetch")
             logger.info("📝 Generating holiday report...")
 
             # Generate holiday report (no data needed)

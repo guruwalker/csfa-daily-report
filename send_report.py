@@ -781,7 +781,7 @@ def _send_holiday_report(excel_file: str, date_str: str) -> bool:
         success = sender.send(msg)
 
         if success:
-            logger.info("🎉 Holiday report email sent successfully!")
+            logger.info(" Holiday report email sent successfully!")
 
         return success
 
@@ -832,7 +832,7 @@ def send_report(
         try:
             report_date = datetime.strptime(date_str, "%Y-%m-%d")
             if is_holiday(report_date):
-                logger.info("🎉 Holiday detected - sending simplified holiday email")
+                logger.info(" Holiday detected - sending simplified holiday email")
                 return _send_holiday_report(excel_file, date_str)
         except ValueError:
             pass  # If date parsing fails, continue with normal report
@@ -946,7 +946,7 @@ def send_report(
         success = sender.send(msg)
 
         if success:
-            logger.info("🎉 Report sent successfully!")
+            logger.info(" Report sent successfully!")
         else:
             logger.error("❌ Failed to send report")
 
