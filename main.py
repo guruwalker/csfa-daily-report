@@ -360,15 +360,19 @@ def fetch_orders_data(order_date: str, order_date_range: str) -> List[Dict]:
     """
     logger.info("📦 Fetching orders data...")
     try:
-        orders_headers = build_orders_headers()
-        orders_cookies = build_orders_cookies()
-        orders_params = build_orders_params(order_date, order_date_range)
-
-        orders_response = get_orders(
-            orders_headers,
-            orders_cookies,
-            orders_params
+        # Build query string for get_orders function
+        query_string = (
+            f"?start_date={order_date}"
+            f"&end_date={order_date}"
+            f"&country_id[]={Config.COUNTRY_ID}"
+            f"&stage=0"
+            f"&page=1"
+            f"&per_page=25"
+            f"&orderWorkflowId=1"
         )
+
+        # Call get_orders with access token and query string
+        orders_response = get_orders(Config.ACCESS_TOKEN, query_string)
         orders_data = orders_response.get('data', [])
 
         if not orders_data:
@@ -408,7 +412,7 @@ def generate_and_send_report() -> bool:
 
         # Check if this is a holiday
         if is_holiday(report_date):
-            logger.info(" Holiday detected - skipping data fetch")
+            logger.info("🎉 Holiday detected - skipping data fetch")
             logger.info("📝 Generating holiday report...")
 
             # Generate holiday report (no data needed)
