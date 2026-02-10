@@ -13,13 +13,13 @@ ALL_SALESPEOPLE = [
     "IMRAN AHMED",
     "INÁCIO RODRIGUES",
     "KUMAR CHAMPAKLAL",
-    "LAURA MARCIA",
+    # "LAURA MARCIA",
     "RICARDO DINIS LANGA",
     # "ITO BEDITO",
     # "FRANCISCO DO ROSARIO TOMAS",
     # "SAIDATA ZALIA JAUHAR SAIDE",
     # "HENRIQUE BERTUR MARCO",
-    # "RICARDO MACUACUA"
+    "RICARDO MACUACUA"
 ]
 
 # Accounts to exclude from all reports (test accounts, etc.)

@@ -3,7 +3,6 @@ Enhanced Email Module for CSFA Report
 Sends daily reports with professional formatting and error handling.
 UPDATED: Focus on customer visits, not revenue
 UPDATED: Added attendance tracking tables
-UPDATED: Simplified holiday email format
 """
 
 import os
@@ -19,6 +18,7 @@ from dotenv import load_dotenv
 import re
 
 from holiday_checker import is_holiday
+from leave_checker import LeaveChecker
 
 load_dotenv()
 
@@ -110,16 +110,16 @@ class HTMLTableGenerator:
         "box-shadow: 0 2px 4px rgba(0,0,0,0.1);"
     )
 
-    ALT_ROW_STYLE = "background-color: #f9f9f9;"
-
     @classmethod
-    def generate(cls, df: pd.DataFrame, format_money: bool = False) -> str:
+    def generate(cls, df: pd.DataFrame, format_money: bool = False, is_attendance: bool = False, has_status: bool = False) -> str:
         """
         Generate HTML table from DataFrame.
 
         Args:
             df: DataFrame to convert
             format_money: Whether to format numeric columns as money
+            is_attendance: Whether this is the monthly attendance table
+            has_status: Whether this table has a STATUS column (unused - for compatibility)
 
         Returns:
             HTML table string
@@ -147,11 +147,10 @@ class HTMLTableGenerator:
             html += f'<th style="{cls.HEADER_STYLE}">{col}</th>'
         html += '</tr></thead>'
 
-        # Data rows with alternating colors
+        # Data rows - plain white background, no colors
         html += '<tbody>'
         for idx, row in df_formatted.iterrows():
-            row_style = cls.ALT_ROW_STYLE if idx % 2 == 1 else ""
-            html += f'<tr style="{row_style}">'
+            html += '<tr>'
             for col in df_formatted.columns:
                 value = row[col]
                 # Right-align numbers
@@ -265,6 +264,9 @@ class EmailBuilder:
         except:
             formatted_date = date_str
 
+        # Get current time for automation message
+        current_time = datetime.now().strftime("%I:%M %p")
+
         return f"""
         <!DOCTYPE html>
         <html>
@@ -299,6 +301,8 @@ class EmailBuilder:
             <div class="footer">
                 <p>Kind regards,<br>
                 <strong>{self.config.SENDER_NAME}</strong></p>
+
+                <p><em>This is an automated report sent at {current_time} on {formatted_date}.</em></p>
             </div>
         </body>
         </html>
@@ -681,7 +685,7 @@ def _get_monthly_attendance_sheet_name(excel_file: str) -> str:
 
 def _send_holiday_report(excel_file: str, date_str: str) -> bool:
     """
-    Send simplified holiday report email.
+    Send holiday report email.
 
     Args:
         excel_file: Path to Excel file
@@ -696,95 +700,34 @@ def _send_holiday_report(excel_file: str, date_str: str) -> bool:
         day_name = report_date.strftime("%A")
         formatted_date = f"{day_name}, {date_str}"
 
-        # Build simple holiday email (no unnecessary boilerplate)
-        holiday_body = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset="UTF-8">
-            <style>
-                body {{
-                    font-family: Arial, sans-serif;
-                    line-height: 1.6;
-                    color: #333;
-                }}
-            </style>
-        </head>
-        <body>
-            <p>Greetings {EmailConfig.RECIPIENT_NAME},</p>
-
-            <p>{formatted_date} was a public holiday, no CSFA activity recorded.</p>
-
-            <p>Kind regards,<br>
-            <strong>{EmailConfig.SENDER_NAME}</strong></p>
-        </body>
-        </html>
+        # Build simple holiday message
+        holiday_html = f"""
+        <div style="text-align: center; padding: 40px;">
+            <h1 style="color: #D9534F; font-size: 32px;">🎉 PUBLIC HOLIDAY</h1>
+            <h2 style="color: #666; font-size: 24px; margin-top: 20px;">{formatted_date}</h2>
+            <p style="font-size: 18px; color: #999; margin-top: 30px;">
+                No business activities were recorded on this date.
+            </p>
+            <p style="font-size: 14px; color: #999; margin-top: 40px; font-style: italic;">
+                This is an automated notification for record-keeping purposes.
+            </p>
+        </div>
         """
 
-        # Build email message directly (bypass the normal builder to avoid boilerplate)
-        msg = EmailMessage()
+        # Build and send email
+        builder = EmailBuilder(EmailConfig)
+        msg = builder.build_message(holiday_html, date_str, [excel_file])
 
-        # Set headers
-        msg["From"] = EmailConfig.SENDER_EMAIL
-        msg["To"] = ", ".join(EmailConfig.clean_recipients(EmailConfig.TO_RECIPIENTS))
-
-        cc_recipients = EmailConfig.clean_recipients(EmailConfig.CC_RECIPIENTS)
-        if cc_recipients:
-            msg["Cc"] = ", ".join(cc_recipients)
-
-        bcc_recipients = EmailConfig.clean_recipients(EmailConfig.BCC_RECIPIENTS)
-        if bcc_recipients:
-            msg["Bcc"] = ", ".join(bcc_recipients)
-
-        # Subject with [Holiday] prefix for easy identification
-        import time
-        thread_id = EmailConfig.EMAIL_THREAD_ID
-        base_subject = EmailConfig.EMAIL_SUBJECT_TEMPLATE.replace("{date}", date_str)
-
-        if thread_id:
-            subject = f"Re: {base_subject} [Holiday]"
-        else:
-            subject = f"{base_subject} [Holiday]"
-
-        msg["Subject"] = subject
-
-        # Threading headers
-        if not thread_id:
-            timestamp = str(int(time.time() * 1000))
-            hostname = EmailConfig.SENDER_EMAIL.split("@")[1]
-            message_id = f"<csfa-report-{timestamp}@{hostname}>"
-            msg["Message-ID"] = message_id
-            logger.info(f"📧 Generated new Message-ID: {message_id}")
-        else:
-            msg["In-Reply-To"] = thread_id
-            msg["References"] = thread_id
-            logger.info(f"📧 Threading holiday email to: {thread_id}")
-
-        # Add HTML body
-        msg.add_alternative(holiday_body, subtype="html")
-
-        # Attach Excel file if it exists
-        if os.path.exists(excel_file):
-            with open(excel_file, "rb") as f:
-                msg.add_attachment(
-                    f.read(),
-                    maintype="application",
-                    subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    filename=os.path.basename(excel_file)
-                )
-            logger.info(f"✅ Attached: {os.path.basename(excel_file)}")
-
-        # Send email
         sender = EmailSender(EmailConfig)
         success = sender.send(msg)
 
         if success:
-            logger.info(" Holiday report email sent successfully!")
+            logger.info("🎉 Holiday report email sent successfully!")
 
         return success
 
     except Exception as e:
-        logger.error(f"❌ Error sending holiday report: {e}", exc_info=True)
+        logger.error(f"❌ Error sending holiday report: {e}")
         return False
 
 
@@ -830,7 +773,7 @@ def send_report(
         try:
             report_date = datetime.strptime(date_str, "%Y-%m-%d")
             if is_holiday(report_date):
-                logger.info(" Holiday detected - sending simplified holiday email")
+                logger.info("🎉 Holiday report detected - sending special holiday email")
                 return _send_holiday_report(excel_file, date_str)
         except ValueError:
             pass  # If date parsing fails, continue with normal report
@@ -847,7 +790,6 @@ def send_report(
         # Read monthly attendance sheet if enabled
         df_monthly_attendance = None
         attendance_sheet_name = None
-        month_name = None
 
         if EmailConfig.INCLUDE_MONTHLY_ATTENDANCE:
             try:
@@ -857,9 +799,6 @@ def send_report(
                 if attendance_sheet_name:
                     logger.info(f"📖 Reading monthly attendance from sheet: {attendance_sheet_name}")
                     df_monthly_attendance = pd.read_excel(excel_file, sheet_name=attendance_sheet_name)
-
-                    # Extract month name from sheet name
-                    month_name = attendance_sheet_name.split(" - ")[-1] if attendance_sheet_name else "This Month"
                 else:
                     logger.warning("⚠️ Monthly attendance sheet not found")
             except Exception as e:
@@ -888,29 +827,18 @@ def send_report(
         if df_monthly_attendance is not None and not df_monthly_attendance.empty:
             logger.info("🎨 Generating monthly attendance table...")
 
-            # Check if attendance data has any actual records
-            has_actual_attendance = False
-            if "Attendance" in df_monthly_attendance.columns:
-                has_actual_attendance = not all(
-                    "No attendance" in str(val) for val in df_monthly_attendance["Attendance"]
-                )
+            # Extract month name from sheet name (e.g., "Monthly Attendance - February" -> "February")
+            month_name = attendance_sheet_name.split(" - ")[-1] if attendance_sheet_name else "This Month"
 
-            if has_actual_attendance:
-                # Generate regular table for actual attendance data
-                monthly_attendance_html = html_generator.generate(
-                    df_monthly_attendance,
-                    format_money=False
-                )
-                monthly_attendance_html = f"""
-                <h3 style="color: #4F81BD; margin-top: 30px;">Monthly Attendance Summary - {month_name}</h3>
-                {monthly_attendance_html}
-                """
-            else:
-                # Show simple message for no attendance yet
-                monthly_attendance_html = f"""
-                <h3 style="color: #4F81BD; margin-top: 30px;">Monthly Attendance Summary - {month_name}</h3>
-                <p style="color: #666; font-style: italic;">No attendance recorded yet for {month_name}.</p>
-                """
+            monthly_attendance_html = html_generator.generate(
+                df_monthly_attendance,
+                format_money=False,
+                is_attendance=True  # Enable attendance color coding
+            )
+            monthly_attendance_html = f"""
+            <h3 style="color: #D9534F; margin-top: 30px;">Monthly Attendance Summary - {month_name}</h3>
+            {monthly_attendance_html}
+            """
 
         # Combine sections
         summary_html = f"""
@@ -944,7 +872,7 @@ def send_report(
         success = sender.send(msg)
 
         if success:
-            logger.info(" Report sent successfully!")
+            logger.info("🎉 Report sent successfully!")
         else:
             logger.error("❌ Failed to send report")
 

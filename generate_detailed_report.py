@@ -27,6 +27,7 @@ from config import is_excluded_account, get_all_salespeople, normalize_name
 from attendance_tracker import AttendanceTracker, update_attendance_for_date, generate_monthly_attendance_summary
 from date_utils import get_report_date
 from holiday_checker import HolidayChecker
+from leave_checker import LeaveChecker
 
 # Configure logging
 logging.basicConfig(
@@ -329,10 +330,8 @@ class ExcelStyler:
         column_widths = {
             1: 25,  # SALESPERSON
             2: 20,  # CUSTOMERS VISITED
-            3: 30,  # ORDER VALUE FROM VISITS
-            4: 20,  # CUSTOMERS CALLED
-            5: 30,  # ORDER VALUE FROM CALLS
-            6: 20,  # APP USAGE
+            3: 20,  # CUSTOMERS CALLED
+            4: 20,  # APP USAGE
         }
 
         for col_idx, width in column_widths.items():
@@ -364,7 +363,7 @@ class ExcelStyler:
             ws.row_dimensions[row_idx].height = max_height
 
     def apply_attendance_styling(self, ws: Worksheet) -> None:
-        """Apply styling to monthly attendance sheet with color coding."""
+        """Apply styling to monthly attendance sheet."""
         if not ws or ws.max_row == 0:
             logger.warning("Empty worksheet, skipping styling")
             return
@@ -395,34 +394,14 @@ class ExcelStyler:
             cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
             cell.border = thin_border
 
-        # Body styling with conditional formatting
-        perfect_fill = PatternFill(
-            start_color=self.config.perfect_attendance_color,
-            end_color=self.config.perfect_attendance_color,
-            fill_type="solid"
-        )
-        absent_fill = PatternFill(
-            start_color=self.config.absent_color,
-            end_color=self.config.absent_color,
-            fill_type="solid"
-        )
-
+        # Body styling - plain, no colors
         body_font = Font(name=self.config.body_font_name, size=self.config.body_font_size)
 
         for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
-            attendance_cell = row[1] if len(row) > 1 else None  # Attendance column
-
             for cell in row:
                 cell.font = body_font
                 cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
                 cell.border = thin_border
-
-                # Color code based on attendance status
-                if attendance_cell and attendance_cell.value:
-                    if "Perfect attendance" in str(attendance_cell.value):
-                        cell.fill = perfect_fill
-                    elif "No attendance" in str(attendance_cell.value):
-                        cell.fill = absent_fill
 
         # Set column widths
         ws.column_dimensions['A'].width = 30  # Salesperson
@@ -453,12 +432,17 @@ class SummaryGenerator:
         self,
         reps: List[str],
         df_final: pd.DataFrame,
-        df_called: pd.DataFrame
+        df_called: pd.DataFrame,
+        report_date: datetime,
+        leave_checker: 'LeaveChecker'
     ) -> pd.DataFrame:
         """Generate summary statistics for each sales rep."""
         summary_rows = []
 
         for rep in reps:
+            # Check if on leave today
+            is_on_leave = leave_checker.is_on_leave(rep, report_date)
+
             # Visits data
             rep_visits = df_final[df_final["sales_rep_final"] == rep]
             customers_visited = rep_visits["customer_name_final"].nunique()
@@ -468,7 +452,12 @@ class SummaryGenerator:
             customers_called = rep_calls["customer_called"].nunique()
 
             # Determine app usage
-            app_usage = "Used App" if (customers_visited > 0 or customers_called > 0) else "Did Not Use App"
+            if is_on_leave:
+                app_usage = "On Leave"
+            elif customers_visited > 0 or customers_called > 0:
+                app_usage = "Used App"
+            else:
+                app_usage = "Did Not Use App"
 
             summary_rows.append({
                 "SALESPERSON": rep,
@@ -488,10 +477,10 @@ class SummaryGenerator:
         summary_for_email["CUSTOMERS CALLED"] = \
             summary_for_email["CUSTOMERS CALLED"].map(lambda x: f"{int(x):,}")
 
-        with open(filepath, "w") as f:
+        with open(filepath, "w", encoding="utf-8") as f:
             f.write(summary_for_email.to_string(index=False))
 
-        logger.info(f"✅ Summary text saved: {filepath}")
+        logger.info(f"Summary text saved: {filepath}")
 
     def export_summary_image(self, df_summary: pd.DataFrame, filepath: str) -> None:
         """Export summary as image (optional)."""
@@ -805,8 +794,8 @@ def _generate_holiday_report(report_date: datetime, config: ReportConfig) -> Non
     logger.info("📝 Creating holiday report...")
 
     # Create a simple dataframe with holiday message
-    holiday_message = f" PUBLIC HOLIDAY - {report_date.strftime('%A, %B %d, %Y')}"
-    no_data_message = "No CSFA activities recorded on this date"
+    holiday_message = f"🎉 PUBLIC HOLIDAY - {report_date.strftime('%A, %B %d, %Y')}"
+    no_data_message = "No business activities recorded on this date"
 
     # Create Excel file with holiday message
     with pd.ExcelWriter(config.output_file, engine="openpyxl") as writer:
@@ -877,7 +866,7 @@ def generate_detailed_report(
     # Check if this is a holiday
     holiday_checker = HolidayChecker(config.attendance_json_file.replace("attendance.json", "holidays.json"))
     if holiday_checker.is_holiday(report_date):
-        logger.info(" Holiday detected - generating special holiday report")
+        logger.info("🎉 Holiday detected - generating special holiday report")
         _generate_holiday_report(report_date, config)
         return
 
@@ -892,8 +881,9 @@ def generate_detailed_report(
     summary_gen = SummaryGenerator()
     rep_gen = RepSheetGenerator(access_token, config)
 
-    # Initialize attendance tracker
+    # Initialize attendance tracker and leave checker
     attendance_tracker = AttendanceTracker(config.attendance_json_file)
+    leave_checker = LeaveChecker(config.attendance_json_file.replace("attendance.json", "leave_days.json"))
 
     # Process data
     logger.info("📊 Processing data...")
@@ -911,22 +901,23 @@ def generate_detailed_report(
 
     logger.info(f"Found {len(reps)} sales representatives")
 
-    # Generate summary
-    df_summary = summary_gen.generate_summary(reps, df_final, df_called)
+    # Generate summary (with leave checker)
+    df_summary = summary_gen.generate_summary(reps, df_final, df_called, report_date, leave_checker)
 
-    # Update attendance tracking
+    # Update attendance tracking (exclude people on leave)
     logger.info("📅 Updating attendance tracking...")
     salespeople_present = list(df_summary[df_summary["APP USAGE"] == "Used App"]["SALESPERSON"])
-    update_attendance_for_date(attendance_tracker, salespeople_present, reps, report_date)
+    update_attendance_for_date(attendance_tracker, salespeople_present, reps, report_date, leave_checker)
 
-    # Generate monthly attendance summary
+    # Generate monthly attendance summary (with leave info)
     month_name = report_date.strftime("%B")  # e.g., "February"
     logger.info(f"📋 Generating monthly attendance summary for {month_name}...")
     attendance_summary = generate_monthly_attendance_summary(
         attendance_tracker,
         reps,
         report_date.year,
-        report_date.month
+        report_date.month,
+        leave_checker
     )
     df_attendance = pd.DataFrame(attendance_summary)
 

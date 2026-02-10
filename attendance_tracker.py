@@ -150,33 +150,63 @@ class AttendanceTracker:
         absent_days = self.get_absent_days(salesperson, year, month)
         return len(absent_days)
 
-    def format_attendance_status(self, salesperson: str, year: int, month: int) -> str:
-        """Format attendance status as a human-readable string."""
+    def format_attendance_status(
+        self,
+        salesperson: str,
+        year: int,
+        month: int,
+        leave_checker: 'LeaveChecker' = None
+    ) -> str:
+        """Format attendance status as a human-readable string, including leave info."""
         absent_days = self.get_absent_days(salesperson, year, month)
 
+        # Get leave information
+        leave_info = ""
+        if leave_checker:
+            leave_days = leave_checker.get_leave_days(salesperson, year, month)
+            if leave_days:
+                leave_str = ", ".join(map(str, leave_days))
+                leave_count = len(leave_days)
+                if leave_count == 1:
+                    leave_info = f" Not active - on leave"
+                else:
+                    leave_info = f" Not active - on leave"
+
         if not absent_days:
-            return "Perfect attendance ✓"
+            if leave_info:
+                return f"{leave_info}"
+            else:
+                return "Perfect attendance"
 
         days_str = ", ".join(map(str, absent_days))
         count = len(absent_days)
 
         if count == 1:
-            return f"No attendance on date: {days_str}"
+            base_msg = f"No attendance on date: {days_str}"
         else:
-            return f"No attendance on dates: {days_str} ({count} days)"
+            base_msg = f"No attendance on dates: {days_str} ({count} days)"
+
+        return base_msg + leave_info
 
 
 def update_attendance_for_date(
     tracker: AttendanceTracker,
     salespeople_present: List[str],
     all_salespeople: List[str],
-    date: datetime
+    date: datetime,
+    leave_checker: 'LeaveChecker' = None
 ) -> None:
-    """Update attendance for a specific date."""
+    """Update attendance for a specific date, excluding people on leave."""
     salespeople_present_set = set(salespeople_present)
 
     for salesperson in all_salespeople:
         tracker.ensure_salesperson_exists(salesperson, date.year, date.month)
+
+        # Check if on leave
+        if leave_checker and leave_checker.is_on_leave(salesperson, date):
+            # Don't mark as absent if on leave - just skip
+            logger.info(f"{salesperson} on leave - not marking absent")
+            continue
 
         if salesperson in salespeople_present_set:
             tracker.mark_present(salesperson, date)
@@ -190,7 +220,8 @@ def generate_monthly_attendance_summary(
     tracker: AttendanceTracker,
     all_salespeople: List[str],
     year: int = None,
-    month: int = None
+    month: int = None,
+    leave_checker: 'LeaveChecker' = None
 ) -> List[Dict[str, str]]:
     """Generate monthly attendance summary for email/report."""
     now = datetime.now()
@@ -200,7 +231,9 @@ def generate_monthly_attendance_summary(
     summary = []
 
     for salesperson in sorted(all_salespeople):
-        attendance_status = tracker.format_attendance_status(salesperson, year, month)
+        attendance_status = tracker.format_attendance_status(
+            salesperson, year, month, leave_checker
+        )
 
         summary.append({
             "Salesperson": salesperson,
