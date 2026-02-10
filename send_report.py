@@ -302,7 +302,6 @@ class EmailBuilder:
                 <p>Kind regards,<br>
                 <strong>{self.config.SENDER_NAME}</strong></p>
 
-                <p><em>This is an automated report sent at {current_time} on {formatted_date}.</em></p>
             </div>
         </body>
         </html>
