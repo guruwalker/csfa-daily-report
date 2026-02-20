@@ -24,7 +24,7 @@ except ImportError:
 
 from api_client import get_order_details
 from config import is_excluded_account, get_all_salespeople, normalize_name
-from attendance_tracker import AttendanceTracker, update_attendance_for_date, generate_monthly_attendance_summary
+from attendance_tracker import AttendanceTracker, update_attendance_for_date, generate_monthly_attendance_summary, generate_monthly_attendance_grid
 from date_utils import get_report_date
 from holiday_checker import HolidayChecker
 from leave_checker import LeaveChecker
@@ -362,6 +362,68 @@ class ExcelStyler:
 
             ws.row_dimensions[row_idx].height = max_height
 
+    def apply_attendance_grid_styling(self, ws: Worksheet) -> None:
+        """Apply styling to monthly attendance grid (daily checkmarks)."""
+        if not ws or ws.max_row == 0:
+            logger.warning("Empty worksheet, skipping styling")
+            return
+
+        thin_border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
+
+        # Header styling
+        header_font = Font(
+            name=self.config.header_font_name,
+            size=self.config.header_font_size,
+            bold=True,
+            color="FFFFFF"
+        )
+        header_fill = PatternFill(
+            start_color=self.config.header_color,
+            end_color=self.config.header_color,
+            fill_type="solid"
+        )
+
+        # Style header row
+        for cell in ws[1]:
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.border = thin_border
+
+        # Body styling - plain, no colors
+        body_font = Font(name=self.config.body_font_name, size=self.config.body_font_size)
+
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+            for idx, cell in enumerate(row):
+                cell.font = body_font
+                cell.border = thin_border
+
+                # Center align date columns and checkmarks
+                if idx == 0:  # Salesperson column
+                    cell.alignment = Alignment(horizontal="left", vertical="center")
+                else:  # Date columns and summary
+                    cell.alignment = Alignment(horizontal="center", vertical="center")
+
+        # Set column widths
+        ws.column_dimensions['A'].width = 25  # Salesperson
+
+        # Date columns - narrower
+        for col_idx in range(2, ws.max_column):  # All day columns
+            col_letter = get_column_letter(col_idx)
+            ws.column_dimensions[col_letter].width = 4
+
+        # Summary column - wider
+        summary_col = get_column_letter(ws.max_column)
+        ws.column_dimensions[summary_col].width = 30
+
+        # Freeze first row and first column
+        ws.freeze_panes = 'B2'
+
     def apply_attendance_styling(self, ws: Worksheet) -> None:
         """Apply styling to monthly attendance sheet."""
         if not ws or ws.max_row == 0:
@@ -437,9 +499,26 @@ class SummaryGenerator:
         leave_checker: 'LeaveChecker'
     ) -> pd.DataFrame:
         """Generate summary statistics for each sales rep."""
+        # Define salespeople without customers
+        no_customers = {
+            "HENRIQUE BERTUR": "No customers assigned",
+            "FRANCISCO TOMAS": "No customers assigned",
+            "SAIDATA ZALIA": "Has only 1 customer assigned"
+        }
+
         summary_rows = []
 
         for rep in reps:
+            # Check if this rep has no customers assigned
+            if rep in no_customers:
+                summary_rows.append({
+                    "SALESPERSON": rep,
+                    "CUSTOMERS VISITED": 0,
+                    "CUSTOMERS CALLED": 0,
+                    "APP USAGE": no_customers[rep]
+                })
+                continue
+
             # Check if on leave today
             is_on_leave = leave_checker.is_on_leave(rep, report_date)
 
@@ -909,7 +988,7 @@ def generate_detailed_report(
     salespeople_present = list(df_summary[df_summary["APP USAGE"] == "Used App"]["SALESPERSON"])
     update_attendance_for_date(attendance_tracker, salespeople_present, reps, report_date, leave_checker)
 
-    # Generate monthly attendance summary (with leave info)
+    # Generate monthly attendance summary for email
     month_name = report_date.strftime("%B")  # e.g., "February"
     logger.info(f"📋 Generating monthly attendance summary for {month_name}...")
     attendance_summary = generate_monthly_attendance_summary(
@@ -919,7 +998,17 @@ def generate_detailed_report(
         report_date.month,
         leave_checker
     )
-    df_attendance = pd.DataFrame(attendance_summary)
+    df_attendance_summary = pd.DataFrame(attendance_summary)
+
+    # Generate daily attendance grid for Excel
+    logger.info(f"📊 Generating daily attendance grid for Excel...")
+    df_attendance_grid = generate_monthly_attendance_grid(
+        attendance_tracker,
+        reps,
+        report_date.year,
+        report_date.month,
+        leave_checker
+    )
 
     # Create Excel file
     logger.info("📝 Creating Excel file...")
@@ -930,12 +1019,17 @@ def generate_detailed_report(
         styler.apply_summary_styling(ws)
         styler.format_money_columns(ws, [2, 4])
 
-        # 2. Monthly Attendance sheet
-        df_attendance.to_excel(writer, index=False, sheet_name=f"Monthly Attendance - {month_name}")
-        ws_attendance = writer.sheets[f"Monthly Attendance - {month_name}"]
-        styler.apply_attendance_styling(ws_attendance)
+        # 2. Monthly Attendance Grid (for Excel viewing - with checkmarks)
+        df_attendance_grid.to_excel(writer, index=False, sheet_name=f"Attendance Grid - {month_name}")
+        ws_attendance_grid = writer.sheets[f"Attendance Grid - {month_name}"]
+        styler.apply_attendance_grid_styling(ws_attendance_grid)
 
-        # 3. Individual rep sheets (only for reps who used the app)
+        # 3. Monthly Attendance Summary (for email - text format)
+        df_attendance_summary.to_excel(writer, index=False, sheet_name=f"Monthly Attendance - {month_name}")
+        ws_attendance_summary = writer.sheets[f"Monthly Attendance - {month_name}"]
+        styler.apply_attendance_styling(ws_attendance_summary)
+
+        # 4. Individual rep sheets (only for reps who used the app)
         for rep in reps:
             rep_data = df_summary[df_summary["SALESPERSON"] == rep]
             if not rep_data.empty and rep_data.iloc[0]["APP USAGE"] == "Used App":
@@ -943,7 +1037,7 @@ def generate_detailed_report(
             else:
                 logger.info(f"  Skipping {rep} (did not use app)")
 
-    # Export summary files
+    # Export summary files (keep text summary for email)
     summary_gen.export_summary_text(df_summary, config.summary_text_file)
     summary_gen.export_summary_image(df_summary, config.summary_image_file)
 

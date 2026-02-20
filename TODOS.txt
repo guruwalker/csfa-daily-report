@@ -1,3 +1,5 @@
 - Add the changes in email thread!!!
 
 - Remove current time and formatted date on "This is an automated report"
+
+- recheck attendance grid

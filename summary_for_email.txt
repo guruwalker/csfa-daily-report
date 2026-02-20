@@ -1,8 +1,11 @@
-        SALESPERSON CUSTOMERS VISITED CUSTOMERS CALLED       APP USAGE
-     ANDRE MARQUEZA                 6                3        Used App
-        IMRAN AHMED                 0                0        On Leave
-   INÁCIO RODRIGUES                 0                0 Did Not Use App
-       ITO BENEDITO                 5                0        Used App
-   KUMAR CHAMPAKLAL                 0                0 Did Not Use App
-RICARDO DINIS LANGA                 7                1        Used App
-   RICARDO MACUACUA                 6                0        Used App
+        SALESPERSON CUSTOMERS VISITED CUSTOMERS CALLED                    APP USAGE
+     ANDRE MARQUEZA                 6                2                     Used App
+    FRANCISCO TOMAS                 0                0        No customers assigned
+    HENRIQUE BERTUR                 0                0        No customers assigned
+        IMRAN AHMED                 0                0                     On Leave
+   INÁCIO RODRIGUES                 0                0              Did Not Use App
+       ITO BENEDITO                 6                1                     Used App
+   KUMAR CHAMPAKLAL                 0                0              Did Not Use App
+RICARDO DINIS LANGA                 8                2                     Used App
+   RICARDO MACUACUA                 5                1                     Used App
+      SAIDATA ZALIA                 0                0 Has only 1 customer assigned

@@ -9,6 +9,7 @@ import os
 import logging
 from datetime import datetime
 from typing import Dict, List
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
@@ -161,16 +162,12 @@ class AttendanceTracker:
         absent_days = self.get_absent_days(salesperson, year, month)
 
         # Get leave information
+        # Get leave information
         leave_info = ""
         if leave_checker:
             leave_days = leave_checker.get_leave_days(salesperson, year, month)
             if leave_days:
-                leave_str = ", ".join(map(str, leave_days))
-                leave_count = len(leave_days)
-                if leave_count == 1:
-                    leave_info = f" Not active - on leave"
-                else:
-                    leave_info = f" Not active - on leave"
+                leave_info = "Not active - On leave"
 
         if not absent_days:
             if leave_info:
@@ -216,6 +213,84 @@ def update_attendance_for_date(
     logger.info(f"Updated attendance for {date.strftime('%Y-%m-%d')}")
 
 
+def generate_monthly_attendance_grid(
+    tracker: AttendanceTracker,
+    all_salespeople: List[str],
+    year: int,
+    month: int,
+    leave_checker: 'LeaveChecker' = None
+) -> pd.DataFrame:
+    """
+    Generate daily attendance grid for Excel (salesperson vs dates).
+
+    Args:
+        tracker: AttendanceTracker instance
+        all_salespeople: Complete list of all salespeople
+        year: Year (e.g., 2026)
+        month: Month (1-12)
+        leave_checker: LeaveChecker instance for leave data
+
+    Returns:
+        DataFrame with salespeople as rows and dates as columns
+    """
+    from datetime import datetime
+    import calendar
+
+    # Salespeople we cannot track (no customers assigned)
+    untrackable = {"HENRIQUE BERTUR", "FRANCISCO TOMAS", "SAIDATA ZALIA"}
+
+    # Get all days in the month
+    num_days = calendar.monthrange(year, month)[1]
+
+    # Get all weekdays in the month
+    weekdays = []
+    for day in range(1, num_days + 1):
+        date = datetime(year, month, day)
+        if date.weekday() < 5:  # Monday=0 to Friday=4
+            weekdays.append(day)
+
+    # Build the grid
+    grid_data = []
+
+    for salesperson in sorted(all_salespeople):
+        row = {"Salesperson": salesperson}
+
+        # Check if this person is untrackable
+        if salesperson in untrackable:
+            # Put hyphens for all days
+            for day in weekdays:
+                row[f"{day}"] = "-"
+            row["Summary"] = "Not trackable"
+            grid_data.append(row)
+            continue
+
+        absent_days = tracker.get_absent_days(salesperson, year, month)
+        leave_days = leave_checker.get_leave_days(salesperson, year, month) if leave_checker else []
+
+        present_count = 0
+        total_weekdays = len(weekdays)
+
+        # Add column for each weekday
+        for day in weekdays:
+            if day in leave_days:
+                row[f"{day}"] = "L"  # L for Leave
+            elif day in absent_days:
+                row[f"{day}"] = "X"  # X for Absent
+            else:
+                row[f"{day}"] = "✓"  # Check mark for Present
+                present_count += 1
+
+        # Add summary column
+        if present_count == total_weekdays:
+            row["Summary"] = f"{present_count}/{total_weekdays} - Perfect attendance"
+        else:
+            row["Summary"] = f"{present_count}/{total_weekdays}"
+
+        grid_data.append(row)
+
+    return pd.DataFrame(grid_data)
+
+
 def generate_monthly_attendance_summary(
     tracker: AttendanceTracker,
     all_salespeople: List[str],
@@ -228,9 +303,37 @@ def generate_monthly_attendance_summary(
     year = year or now.year
     month = month or now.month
 
+    # # Salespeople we cannot track
+    # untrackable = {"HENRIQUE BERTUR", "FRANCISCO TOMAS", "SAIDATA ZALIA"}
+
+    # summary = []
+
+    # for salesperson in sorted(all_salespeople):
+    #     # Check if untrackable
+    #     if salesperson in untrackable:
+    #         summary.append({
+    #             "Salesperson": salesperson,
+    #             "Attendance": "Not trackable - no customers assigned"
+    #         })
+    #         continue
+    # Salespeople we cannot track
+    untrackable = {
+        "HENRIQUE BERTUR": "No customers assigned",
+        "FRANCISCO TOMAS": "No customers assigned",
+        "SAIDATA ZALIA": "Has only 1 customer assigned",
+    }
+
     summary = []
 
     for salesperson in sorted(all_salespeople):
+        # Check if untrackable
+        if salesperson in untrackable:
+            summary.append({
+                "Salesperson": salesperson,
+                "Attendance": untrackable[salesperson]
+            })
+            continue
+
         attendance_status = tracker.format_attendance_status(
             salesperson, year, month, leave_checker
         )
