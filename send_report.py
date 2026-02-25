@@ -3,6 +3,7 @@ Enhanced Email Module for CSFA Report
 Sends daily reports with professional formatting and error handling.
 UPDATED: Focus on customer visits, not revenue
 UPDATED: Added attendance tracking tables
+UPDATED: Simplified holiday email format
 """
 
 import os
@@ -18,7 +19,6 @@ from dotenv import load_dotenv
 import re
 
 from holiday_checker import is_holiday
-from leave_checker import LeaveChecker
 
 load_dotenv()
 
@@ -110,16 +110,16 @@ class HTMLTableGenerator:
         "box-shadow: 0 2px 4px rgba(0,0,0,0.1);"
     )
 
+    ALT_ROW_STYLE = "background-color: #f9f9f9;"
+
     @classmethod
-    def generate(cls, df: pd.DataFrame, format_money: bool = False, is_attendance: bool = False, has_status: bool = False) -> str:
+    def generate(cls, df: pd.DataFrame, format_money: bool = False) -> str:
         """
         Generate HTML table from DataFrame.
 
         Args:
             df: DataFrame to convert
             format_money: Whether to format numeric columns as money
-            is_attendance: Whether this is the monthly attendance table
-            has_status: Whether this table has a STATUS column (unused - for compatibility)
 
         Returns:
             HTML table string
@@ -131,7 +131,7 @@ class HTMLTableGenerator:
         df_formatted = df.copy()
 
         # Format customer count columns as integers (no decimals)
-        customer_columns = ['CUSTOMERS VISITED', 'CUSTOMERS CALLED']
+        customer_columns = ['CUSTOMERS VISITED']
         for col in customer_columns:
             if col in df_formatted.columns:
                 df_formatted[col] = df_formatted[col].apply(
@@ -147,10 +147,11 @@ class HTMLTableGenerator:
             html += f'<th style="{cls.HEADER_STYLE}">{col}</th>'
         html += '</tr></thead>'
 
-        # Data rows - plain white background, no colors
+        # Data rows with alternating colors
         html += '<tbody>'
         for idx, row in df_formatted.iterrows():
-            html += '<tr>'
+            row_style = cls.ALT_ROW_STYLE if idx % 2 == 1 else ""
+            html += f'<tr style="{row_style}">'
             for col in df_formatted.columns:
                 value = row[col]
                 # Right-align numbers
@@ -264,9 +265,6 @@ class EmailBuilder:
         except:
             formatted_date = date_str
 
-        # Get current time for automation message
-        current_time = datetime.now().strftime("%I:%M %p")
-
         return f"""
         <!DOCTYPE html>
         <html>
@@ -302,6 +300,7 @@ class EmailBuilder:
                 <p>Kind regards,<br>
                 <strong>{self.config.SENDER_NAME}</strong></p>
 
+                <p><em>This is an automated report sent on {formatted_date}.</em></p>
             </div>
         </body>
         </html>
@@ -399,223 +398,14 @@ class EmailSender:
 
 
 # ============================================================================
-# HELPER FUNCTIONS
+# KPI SECTION GENERATOR
 # ============================================================================
-
-def parse_time_spent(time_str: str) -> int:
-    """
-    Parse time spent string and return total minutes.
-
-    Args:
-        time_str: Time string like "00 Hrs 45 Mins" or "01 Hrs 15 Mins"
-
-    Returns:
-        Total minutes as integer
-    """
-    if not time_str or time_str == "-":
-        return 0
-
-    try:
-        # Extract hours and minutes using regex
-        hours_match = re.search(r'(\d+)\s*Hrs?', time_str, re.IGNORECASE)
-        mins_match = re.search(r'(\d+)\s*Mins?', time_str, re.IGNORECASE)
-
-        hours = int(hours_match.group(1)) if hours_match else 0
-        minutes = int(mins_match.group(1)) if mins_match else 0
-
-        total_minutes = (hours * 60) + minutes
-        return total_minutes
-    except Exception as e:
-        logger.warning(f"Could not parse time string '{time_str}': {e}")
-        return 0
-
-
-def is_productive_visit(time_str: str, threshold_minutes: int = 10) -> str:
-    """
-    Determine if a visit was productive based on time spent.
-
-    Args:
-        time_str: Time spent string
-        threshold_minutes: Minimum minutes for productive visit (default 10)
-
-    Returns:
-        "Yes" or "No"
-    """
-    minutes = parse_time_spent(time_str)
-    return "Yes" if minutes >= threshold_minutes else "No"
-
-
-# ============================================================================
-# CUSTOMER DETAILS TABLE BUILDER
-# ============================================================================
-
-def _build_customer_details_table(excel_file: str, df_summary: pd.DataFrame) -> pd.DataFrame:
-    """
-    Build a customer details table by reading all rep sheets.
-    Format: Salesperson, Customer Name, Interaction, Time Spent, Productive Visit
-    """
-    from openpyxl import load_workbook
-
-    customer_rows = []
-
-    try:
-        # Load the Excel file
-        wb = load_workbook(excel_file, data_only=True)
-
-        # Get all salesperson names from summary
-        salespersons = df_summary["SALESPERSON"].tolist()
-
-        for rep in salespersons:
-            # Clean sheet name (same logic as in report generation)
-            sheet_name = rep.replace(".", "_").replace(" ", "_")[:31]
-
-            if sheet_name not in wb.sheetnames:
-                continue
-
-            ws = wb[sheet_name]
-
-            # Parse the sheet to extract customer information
-            current_customer = None
-            current_interaction = None
-            current_time_spent = None
-
-            for row_idx in range(1, ws.max_row + 1):
-                # Read first two columns
-                col_a = ws.cell(row=row_idx, column=1).value
-                col_b = ws.cell(row=row_idx, column=2).value
-
-                if not col_a:
-                    continue
-
-                col_a_str = str(col_a).strip()
-                col_b_str = str(col_b).strip() if col_b else ""
-
-                # Check if this is a customer header row
-                if "(" in col_a_str and col_a_str.endswith(")"):
-                    # Save previous customer if exists
-                    if current_customer:
-                        # Determine if productive visit
-                        productive = is_productive_visit(current_time_spent) if current_interaction in ["Visited", "Visited & Called"] else "N/A"
-
-                        customer_rows.append({
-                            "Salesperson": rep,
-                            "Customer Name": current_customer,
-                            "Interaction": current_interaction,
-                            "Time Spent": current_time_spent or "-",
-                            "Productive Visit": productive
-                        })
-
-                    # Parse new customer
-                    if "(visited & called)" in col_a_str.lower():
-                        current_customer = col_a_str.rsplit("(", 1)[0].strip()
-                        current_interaction = "Visited & Called"
-                    elif "(visited)" in col_a_str.lower():
-                        current_customer = col_a_str.rsplit("(", 1)[0].strip()
-                        current_interaction = "Visited"
-                    elif "(called)" in col_a_str.lower():
-                        current_customer = col_a_str.rsplit("(", 1)[0].strip()
-                        current_interaction = "Called"
-                    else:
-                        current_customer = col_a_str
-                        current_interaction = "Unknown"
-
-                    # Extract time spent from column B
-                    if col_b_str.startswith("Time Spent:"):
-                        current_time_spent = col_b_str.replace("Time Spent:", "").strip()
-                    else:
-                        current_time_spent = None
-
-            # Don't forget the last customer
-            if current_customer:
-                productive = is_productive_visit(current_time_spent) if current_interaction in ["Visited", "Visited & Called"] else "N/A"
-
-                customer_rows.append({
-                    "Salesperson": rep,
-                    "Customer Name": current_customer,
-                    "Interaction": current_interaction,
-                    "Time Spent": current_time_spent or "-",
-                    "Productive Visit": productive
-                })
-
-        wb.close()
-
-    except Exception as e:
-        logger.error(f"Error building customer details table: {e}", exc_info=True)
-
-    # Create DataFrame
-    df = pd.DataFrame(customer_rows)
-
-    # Sort by Salesperson, then Customer Name
-    if not df.empty:
-        df = df.sort_values(by=["Salesperson", "Customer Name"])
-
-    return df
-
-
-def _generate_customer_details_table(df: pd.DataFrame) -> str:
-    """Generate HTML table for customer details."""
-    if df.empty:
-        return "<p><em>No customer interaction data available</em></p>"
-
-    # Define styles
-    header_style = (
-        "background-color: #4F81BD; "
-        "color: #FFFFFF; "
-        "font-weight: bold; "
-        "padding: 12px; "
-        "text-align: left; "
-        "border: 1px solid #2F5F8D; "
-        "font-family: Arial, sans-serif;"
-    )
-
-    cell_style = (
-        "padding: 10px; "
-        "border: 1px solid #ddd; "
-        "text-align: left; "
-        "font-family: Arial, sans-serif; "
-        "color: #333333;"
-    )
-
-    table_style = (
-        "border-collapse: collapse; "
-        "width: 100%; "
-        "margin: 20px 0; "
-        "box-shadow: 0 2px 4px rgba(0,0,0,0.1);"
-    )
-
-    # Build HTML
-    html = f'<table style="{table_style}">'
-
-    # Header
-    html += '<thead><tr>'
-    for col in df.columns:
-        html += f'<th style="{header_style}">{col}</th>'
-    html += '</tr></thead>'
-
-    # Body with alternating colors
-    html += '<tbody>'
-    for idx, row in df.iterrows():
-        row_style = "background-color: #f9f9f9;" if idx % 2 == 1 else ""
-        html += f'<tr style="{row_style}">'
-        for col in df.columns:
-            value = row[col]
-            # Center-align Productive Visit column
-            align = "center" if col == "Productive Visit" else "left"
-            style = cell_style + f" text-align: {align};"
-            html += f'<td style="{style}">{value}</td>'
-        html += '</tr>'
-    html += '</tbody>'
-    html += '</table>'
-
-    return html
-
 
 def _generate_kpi_section(df_summary: pd.DataFrame) -> str:
     """Generate KPI summary section focused on customer visits."""
     try:
         # Calculate totals
         total_customers_visited = int(df_summary["CUSTOMERS VISITED"].sum())
-        total_customers_called = int(df_summary["CUSTOMERS CALLED"].sum())
 
         # Calculate active salespeople (those who used the app)
         active_salespeople = int(df_summary[df_summary["APP USAGE"] == "Used App"].shape[0])
@@ -624,23 +414,18 @@ def _generate_kpi_section(df_summary: pd.DataFrame) -> str:
 
         # Format numbers
         visited_str = f"{total_customers_visited:,}"
-        called_str = f"{total_customers_called:,}"
 
-        # Generate KPI HTML
+        # Generate KPI HTML (2-column layout)
         kpi_html = f"""
         <div style="margin: 20px 0;">
             <h3 style="color: #4F81BD; margin-bottom: 15px;">Key Performance Indicators</h3>
             <table style="border-collapse: collapse; width: 100%; margin-bottom: 20px;">
                 <tr>
-                    <td style="padding: 15px; background-color: #E8F4F8; border: 2px solid #4F81BD; width: 33.33%; text-align: center;">
+                    <td style="padding: 15px; background-color: #E8F4F8; border: 2px solid #4F81BD; width: 50%; text-align: center;">
                         <div style="font-size: 14px; color: #666; margin-bottom: 5px;">CUSTOMERS VISITED</div>
                         <div style="font-size: 28px; font-weight: bold; color: #4F81BD;">{visited_str}</div>
                     </td>
-                    <td style="padding: 15px; background-color: #E8F4F8; border: 2px solid #4F81BD; width: 33.33%; text-align: center;">
-                        <div style="font-size: 14px; color: #666; margin-bottom: 5px;">CUSTOMERS CALLED</div>
-                        <div style="font-size: 28px; font-weight: bold; color: #4F81BD;">{called_str}</div>
-                    </td>
-                    <td style="padding: 15px; background-color: #E8F4F8; border: 2px solid #4F81BD; width: 33.33%; text-align: center;">
+                    <td style="padding: 15px; background-color: #E8F4F8; border: 2px solid #4F81BD; width: 50%; text-align: center;">
                         <div style="font-size: 14px; color: #666; margin-bottom: 5px;">ACTIVE SALESPEOPLE</div>
                         <div style="font-size: 28px; font-weight: bold; color: #4F81BD;">{active_fraction}</div>
                     </td>
@@ -684,7 +469,7 @@ def _get_monthly_attendance_sheet_name(excel_file: str) -> str:
 
 def _send_holiday_report(excel_file: str, date_str: str) -> bool:
     """
-    Send holiday report email.
+    Send simplified holiday report email.
 
     Args:
         excel_file: Path to Excel file
@@ -699,24 +484,85 @@ def _send_holiday_report(excel_file: str, date_str: str) -> bool:
         day_name = report_date.strftime("%A")
         formatted_date = f"{day_name}, {date_str}"
 
-        # Build simple holiday message
-        holiday_html = f"""
-        <div style="text-align: center; padding: 40px;">
-            <h1 style="color: #D9534F; font-size: 32px;">🎉 PUBLIC HOLIDAY</h1>
-            <h2 style="color: #666; font-size: 24px; margin-top: 20px;">{formatted_date}</h2>
-            <p style="font-size: 18px; color: #999; margin-top: 30px;">
-                No business activities were recorded on this date.
-            </p>
-            <p style="font-size: 14px; color: #999; margin-top: 40px; font-style: italic;">
-                This is an automated notification for record-keeping purposes.
-            </p>
-        </div>
+        # Build simple holiday email (no unnecessary boilerplate)
+        holiday_body = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <style>
+                body {{
+                    font-family: Arial, sans-serif;
+                    line-height: 1.6;
+                    color: #333;
+                }}
+            </style>
+        </head>
+        <body>
+            <p>Greetings {EmailConfig.RECIPIENT_NAME},</p>
+
+            <p>{formatted_date} was a public holiday, no CSFA activity recorded.</p>
+
+            <p>Kind regards,<br>
+            <strong>{EmailConfig.SENDER_NAME}</strong></p>
+        </body>
+        </html>
         """
 
-        # Build and send email
-        builder = EmailBuilder(EmailConfig)
-        msg = builder.build_message(holiday_html, date_str, [excel_file])
+        # Build email message directly (bypass the normal builder to avoid boilerplate)
+        msg = EmailMessage()
 
+        # Set headers
+        msg["From"] = EmailConfig.SENDER_EMAIL
+        msg["To"] = ", ".join(EmailConfig.clean_recipients(EmailConfig.TO_RECIPIENTS))
+
+        cc_recipients = EmailConfig.clean_recipients(EmailConfig.CC_RECIPIENTS)
+        if cc_recipients:
+            msg["Cc"] = ", ".join(cc_recipients)
+
+        bcc_recipients = EmailConfig.clean_recipients(EmailConfig.BCC_RECIPIENTS)
+        if bcc_recipients:
+            msg["Bcc"] = ", ".join(bcc_recipients)
+
+        # Subject with [Holiday] prefix for easy identification
+        import time
+        thread_id = EmailConfig.EMAIL_THREAD_ID
+        base_subject = EmailConfig.EMAIL_SUBJECT_TEMPLATE.replace("{date}", date_str)
+
+        if thread_id:
+            subject = f"Re: {base_subject} [Holiday]"
+        else:
+            subject = f"{base_subject} [Holiday]"
+
+        msg["Subject"] = subject
+
+        # Threading headers
+        if not thread_id:
+            timestamp = str(int(time.time() * 1000))
+            hostname = EmailConfig.SENDER_EMAIL.split("@")[1]
+            message_id = f"<csfa-report-{timestamp}@{hostname}>"
+            msg["Message-ID"] = message_id
+            logger.info(f"📧 Generated new Message-ID: {message_id}")
+        else:
+            msg["In-Reply-To"] = thread_id
+            msg["References"] = thread_id
+            logger.info(f"📧 Threading holiday email to: {thread_id}")
+
+        # Add HTML body
+        msg.add_alternative(holiday_body, subtype="html")
+
+        # Attach Excel file if it exists
+        if os.path.exists(excel_file):
+            with open(excel_file, "rb") as f:
+                msg.add_attachment(
+                    f.read(),
+                    maintype="application",
+                    subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    filename=os.path.basename(excel_file)
+                )
+            logger.info(f"✅ Attached: {os.path.basename(excel_file)}")
+
+        # Send email
         sender = EmailSender(EmailConfig)
         success = sender.send(msg)
 
@@ -726,7 +572,7 @@ def _send_holiday_report(excel_file: str, date_str: str) -> bool:
         return success
 
     except Exception as e:
-        logger.error(f"❌ Error sending holiday report: {e}")
+        logger.error(f"❌ Error sending holiday report: {e}", exc_info=True)
         return False
 
 
@@ -772,7 +618,7 @@ def send_report(
         try:
             report_date = datetime.strptime(date_str, "%Y-%m-%d")
             if is_holiday(report_date):
-                logger.info("🎉 Holiday report detected - sending special holiday email")
+                logger.info("🎉 Holiday detected - sending simplified holiday email")
                 return _send_holiday_report(excel_file, date_str)
         except ValueError:
             pass  # If date parsing fails, continue with normal report
@@ -789,6 +635,7 @@ def send_report(
         # Read monthly attendance sheet if enabled
         df_monthly_attendance = None
         attendance_sheet_name = None
+        month_name = None
 
         if EmailConfig.INCLUDE_MONTHLY_ATTENDANCE:
             try:
@@ -798,15 +645,14 @@ def send_report(
                 if attendance_sheet_name:
                     logger.info(f"📖 Reading monthly attendance from sheet: {attendance_sheet_name}")
                     df_monthly_attendance = pd.read_excel(excel_file, sheet_name=attendance_sheet_name)
+
+                    # Extract month name from sheet name
+                    month_name = attendance_sheet_name.split(" - ")[-1] if attendance_sheet_name else "This Month"
                 else:
                     logger.warning("⚠️ Monthly attendance sheet not found")
             except Exception as e:
                 logger.warning(f"⚠️ Could not read monthly attendance sheet: {e}")
                 logger.info("Continuing without attendance data in email...")
-
-        # Read all individual rep sheets to build customer detail table
-        logger.info(f"📖 Reading individual rep sheets for customer details...")
-        df_customer_details = _build_customer_details_table(excel_file, df_summary)
 
         # Generate KPI sections
         logger.info("📈 Calculating KPIs...")
@@ -817,36 +663,41 @@ def send_report(
         html_generator = HTMLTableGenerator()
         summary_html_table = html_generator.generate(df_summary, format_money=False)
 
-        # Generate customer details table
-        logger.info("🎨 Generating customer details table...")
-        customer_details_html = _generate_customer_details_table(df_customer_details)
-
         # Generate monthly attendance table if available
         monthly_attendance_html = ""
         if df_monthly_attendance is not None and not df_monthly_attendance.empty:
             logger.info("🎨 Generating monthly attendance table...")
 
-            # Extract month name from sheet name (e.g., "Monthly Attendance - February" -> "February")
-            month_name = attendance_sheet_name.split(" - ")[-1] if attendance_sheet_name else "This Month"
+            # Check if attendance data has any actual records
+            has_actual_attendance = False
+            if "Attendance" in df_monthly_attendance.columns:
+                has_actual_attendance = not all(
+                    "No attendance" in str(val) for val in df_monthly_attendance["Attendance"]
+                )
 
-            monthly_attendance_html = html_generator.generate(
-                df_monthly_attendance,
-                format_money=False,
-                is_attendance=True  # Enable attendance color coding
-            )
-            monthly_attendance_html = f"""
-            <h3 style="color: #D9534F; margin-top: 30px;">Monthly Attendance Summary - {month_name}</h3>
-            {monthly_attendance_html}
-            """
+            if has_actual_attendance:
+                # Generate regular table for actual attendance data
+                monthly_attendance_html = html_generator.generate(
+                    df_monthly_attendance,
+                    format_money=False
+                )
+                monthly_attendance_html = f"""
+                <h3 style="color: #4F81BD; margin-top: 30px;">Monthly Attendance Summary - {month_name}</h3>
+                {monthly_attendance_html}
+                """
+            else:
+                # Show simple message for no attendance yet
+                monthly_attendance_html = f"""
+                <h3 style="color: #4F81BD; margin-top: 30px;">Monthly Attendance Summary - {month_name}</h3>
+                <p style="color: #666; font-style: italic;">No attendance recorded yet for {month_name}.</p>
+                """
 
-        # Combine sections
+        # Combine sections (removed customer details table)
         summary_html = f"""
         {kpi_html}
         <h3 style="color: #4F81BD; margin-top: 30px;">Summary by Salesperson</h3>
         {summary_html_table}
         {monthly_attendance_html}
-        <h3 style="color: #4F81BD; margin-top: 30px;">All Customer Interactions</h3>
-        {customer_details_html}
         """
 
         # Save HTML preview (optional, for debugging)
