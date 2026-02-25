@@ -223,21 +223,10 @@ def generate_monthly_attendance_grid(
     """
     Generate daily attendance grid for Excel (salesperson vs dates).
 
-    Args:
-        tracker: AttendanceTracker instance
-        all_salespeople: Complete list of all salespeople
-        year: Year (e.g., 2026)
-        month: Month (1-12)
-        leave_checker: LeaveChecker instance for leave data
-
-    Returns:
-        DataFrame with salespeople as rows and dates as columns
+    UPDATED: Removed untrackable salespeople logic - all salespeople now have customers.
     """
     from datetime import datetime
     import calendar
-
-    # Salespeople we cannot track (no customers assigned)
-    untrackable = {"HENRIQUE BERTUR", "FRANCISCO TOMAS", "SAIDATA ZALIA"}
 
     # Get all days in the month
     num_days = calendar.monthrange(year, month)[1]
@@ -254,15 +243,6 @@ def generate_monthly_attendance_grid(
 
     for salesperson in sorted(all_salespeople):
         row = {"Salesperson": salesperson}
-
-        # Check if this person is untrackable
-        if salesperson in untrackable:
-            # Put hyphens for all days
-            for day in weekdays:
-                row[f"{day}"] = "-"
-            row["Summary"] = "Not trackable"
-            grid_data.append(row)
-            continue
 
         absent_days = tracker.get_absent_days(salesperson, year, month)
         leave_days = leave_checker.get_leave_days(salesperson, year, month) if leave_checker else []
@@ -291,6 +271,8 @@ def generate_monthly_attendance_grid(
     return pd.DataFrame(grid_data)
 
 
+# UPDATED: Remove untrackable salespeople logic from generate_monthly_attendance_summary
+
 def generate_monthly_attendance_summary(
     tracker: AttendanceTracker,
     all_salespeople: List[str],
@@ -298,42 +280,17 @@ def generate_monthly_attendance_summary(
     month: int = None,
     leave_checker: 'LeaveChecker' = None
 ) -> List[Dict[str, str]]:
-    """Generate monthly attendance summary for email/report."""
+    """Generate monthly attendance summary for email/report.
+
+    UPDATED: Removed untrackable salespeople logic - all salespeople now have customers.
+    """
     now = datetime.now()
     year = year or now.year
     month = month or now.month
 
-    # # Salespeople we cannot track
-    # untrackable = {"HENRIQUE BERTUR", "FRANCISCO TOMAS", "SAIDATA ZALIA"}
-
-    # summary = []
-
-    # for salesperson in sorted(all_salespeople):
-    #     # Check if untrackable
-    #     if salesperson in untrackable:
-    #         summary.append({
-    #             "Salesperson": salesperson,
-    #             "Attendance": "Not trackable - no customers assigned"
-    #         })
-    #         continue
-    # Salespeople we cannot track
-    untrackable = {
-        "HENRIQUE BERTUR": "No customers assigned",
-        "FRANCISCO TOMAS": "No customers assigned",
-        "SAIDATA ZALIA": "Has only 1 customer assigned",
-    }
-
     summary = []
 
     for salesperson in sorted(all_salespeople):
-        # Check if untrackable
-        if salesperson in untrackable:
-            summary.append({
-                "Salesperson": salesperson,
-                "Attendance": untrackable[salesperson]
-            })
-            continue
-
         attendance_status = tracker.format_attendance_status(
             salesperson, year, month, leave_checker
         )
