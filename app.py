@@ -133,7 +133,6 @@ def generate_report():
     try:
         # Get form data
         report_date_str = request.form.get('report_date')
-        send_email = request.form.get('send_email') == 'on'
 
         # Validate date
         is_valid, error_msg, report_date = validate_date(report_date_str)
@@ -174,22 +173,7 @@ def generate_report():
 
         generate_detailed_report(visits_data, orders_data, report_date, report_config)
 
-        # Send email if requested
-        if send_email:
-            logger.info("Sending email report...")
-            from send_report import send_report
-            email_success = send_report(
-                excel_file=str(report_path),
-                summary_sheet="Day Summary",  # Use the new sheet name
-                date_str=report_date_str
-            )
-
-            if email_success:
-                flash("Report generated and email sent successfully!", 'success')
-            else:
-                flash("Report generated but email failed to send", 'warning')
-        else:
-            flash("Report generated successfully!", 'success')
+        flash("Report generated successfully!", 'success')
 
         # Get report summary
         summary = get_report_summary(str(report_path))
@@ -198,7 +182,7 @@ def generate_report():
                              report_date=report_date_str,
                              report_file=report_filename,
                              summary=summary,
-                             email_sent=send_email)
+                             email_sent=False)  # Email not sent yet
 
     except Exception as e:
         logger.error(f"Error generating report: {e}")
@@ -257,6 +241,92 @@ def preview_report(filename):
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/send-email', methods=['POST'])
+def send_email_route():
+    """Send email for a generated report (test or live thread)."""
+    try:
+        data = request.get_json()
+        filename = data.get('filename')
+        mode = data.get('mode', 'test')  # 'test' or 'live'
+        report_date_str = data.get('report_date')
+
+        if not filename:
+            return jsonify({"success": False, "error": "Filename required"}), 400
+
+        report_path = REPORTS_FOLDER / filename
+
+        if not report_path.exists():
+            return jsonify({"success": False, "error": "Report file not found"}), 404
+
+        logger.info(f"Sending email in {mode} mode for {filename}")
+
+        # Import send_report
+        from send_report import send_report
+        import os
+
+        # Temporarily override EMAIL_THREAD_ID based on mode
+        original_thread_id = os.environ.get('EMAIL_THREAD_ID')
+        original_to = os.environ.get('EMAIL_TO')
+
+        if mode == 'test':
+            # Use test thread ID and test recipient
+            test_thread_id = os.getenv('EMAIL_THREAD_ID_TEST', '')
+            test_to = os.getenv('EMAIL_TO_TEST', os.getenv('SENDER_EMAIL'))  # Default to sender
+
+            if test_thread_id:
+                os.environ['EMAIL_THREAD_ID'] = test_thread_id
+            else:
+                # Remove thread ID for test to create new thread
+                os.environ.pop('EMAIL_THREAD_ID', None)
+
+            os.environ['EMAIL_TO'] = test_to
+            logger.info(f"📧 Test mode: Sending to {test_to}")
+
+        else:  # live mode
+            # Use production thread ID and recipients
+            live_thread_id = os.getenv('EMAIL_THREAD_ID_LIVE', os.getenv('EMAIL_THREAD_ID', ''))
+            if live_thread_id:
+                os.environ['EMAIL_THREAD_ID'] = live_thread_id
+            # EMAIL_TO already set to production
+            logger.info(f"📧 Live mode: Sending to production recipients")
+
+        # Send the email
+        success = send_report(
+            excel_file=str(report_path),
+            summary_sheet="Day Summary",
+            date_str=report_date_str
+        )
+
+        # Restore original environment
+        if original_thread_id:
+            os.environ['EMAIL_THREAD_ID'] = original_thread_id
+        else:
+            os.environ.pop('EMAIL_THREAD_ID', None)
+
+        if original_to:
+            os.environ['EMAIL_TO'] = original_to
+
+        if success:
+            return jsonify({
+                "success": True,
+                "mode": mode,
+                "message": f"Email sent successfully in {mode} mode"
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "error": "Email sending failed - check logs"
+            }), 500
+
+    except Exception as e:
+        logger.error(f"Error sending email: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
 @app.route('/health')
 def health():
     """Health check endpoint for monitoring."""
@@ -296,7 +366,7 @@ if __name__ == '__main__':
         logger.warning("App will start but report generation may fail")
 
     # Run app
-    port = int(os.getenv('PORT', 3001))
+    port = int(os.getenv('PORT', 5000))
     debug = os.getenv('FLASK_DEBUG', 'False').lower() == 'true'
 
     logger.info(f"🚀 Starting CSFA Report Web Interface on port {port}")
