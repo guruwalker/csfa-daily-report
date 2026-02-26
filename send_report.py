@@ -53,7 +53,7 @@ class EmailConfig:
 
     # Files
     EXCEL_FILE = os.getenv("OUTPUT_FILE", "Daily_CSFA_Report.xlsx")
-    SUMMARY_SHEET = os.getenv("SUMMARY_SHEET", "Summary")
+    SUMMARY_SHEET = os.getenv("SUMMARY_SHEET", "Day Summary")
 
     # SMTP timeout
     SMTP_TIMEOUT = int(os.getenv("SMTP_TIMEOUT", "30"))

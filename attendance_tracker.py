@@ -213,20 +213,28 @@ def update_attendance_for_date(
     logger.info(f"Updated attendance for {date.strftime('%Y-%m-%d')}")
 
 
+# UPDATED: Only show tick/X for days that have passed
+
 def generate_monthly_attendance_grid(
     tracker: AttendanceTracker,
     all_salespeople: List[str],
     year: int,
     month: int,
-    leave_checker: 'LeaveChecker' = None
+    leave_checker: 'LeaveChecker' = None,
+    current_date: datetime = None
 ) -> pd.DataFrame:
     """
     Generate daily attendance grid for Excel (salesperson vs dates).
 
-    UPDATED: Removed untrackable salespeople logic - all salespeople now have customers.
+    UPDATED: Only shows tick/X for days that have already passed.
+    Future days are left blank.
     """
     from datetime import datetime
     import calendar
+
+    # Use current date to determine which days to mark
+    if current_date is None:
+        current_date = datetime.now()
 
     # Get all days in the month
     num_days = calendar.monthrange(year, month)[1]
@@ -248,23 +256,33 @@ def generate_monthly_attendance_grid(
         leave_days = leave_checker.get_leave_days(salesperson, year, month) if leave_checker else []
 
         present_count = 0
-        total_weekdays = len(weekdays)
+        total_past_weekdays = 0
 
         # Add column for each weekday
         for day in weekdays:
-            if day in leave_days:
-                row[f"{day}"] = "L"  # L for Leave
-            elif day in absent_days:
-                row[f"{day}"] = "X"  # X for Absent
+            date_to_check = datetime(year, month, day)
+
+            # Only mark days that have passed
+            if date_to_check.date() > current_date.date():
+                row[f"{day}"] = ""  # Empty for future days
             else:
-                row[f"{day}"] = "✓"  # Check mark for Present
-                present_count += 1
+                total_past_weekdays += 1
+
+                if day in leave_days:
+                    row[f"{day}"] = "L"  # L for Leave
+                elif day in absent_days:
+                    row[f"{day}"] = "X"  # X for Absent
+                else:
+                    row[f"{day}"] = "✓"  # Check mark for Present
+                    present_count += 1
 
         # Add summary column
-        if present_count == total_weekdays:
-            row["Summary"] = f"{present_count}/{total_weekdays} - Perfect attendance"
+        if total_past_weekdays == 0:
+            row["Summary"] = "No days yet"
+        elif present_count == total_past_weekdays:
+            row["Summary"] = f"{present_count}/{total_past_weekdays} - Perfect attendance"
         else:
-            row["Summary"] = f"{present_count}/{total_weekdays}"
+            row["Summary"] = f"{present_count}/{total_past_weekdays}"
 
         grid_data.append(row)
 
@@ -301,3 +319,49 @@ def generate_monthly_attendance_summary(
         })
 
     return summary
+
+
+# CRITICAL FIX: Update attendance only for past dates
+
+def update_attendance_for_date(
+    tracker: AttendanceTracker,
+    salespeople_present: List[str],
+    all_salespeople: List[str],
+    date: datetime,
+    leave_checker: 'LeaveChecker' = None
+) -> None:
+    """
+    Update attendance for a specific date, excluding people on leave.
+
+    CRITICAL FIX: Only marks people as absent if the date has actually passed.
+    Does not mark future dates or today as absent.
+
+    This prevents the bug where generating a report for yesterday would mark
+    people as absent for today.
+    """
+    from datetime import datetime as dt
+
+    # Don't process future dates or today (since the day isn't over yet)
+    current_date = dt.now().date()
+    if date.date() >= current_date:
+        logger.info(f"⏭️  Skipping attendance update for {date.strftime('%Y-%m-%d')} - date is today or in the future")
+        return
+
+    salespeople_present_set = set(salespeople_present)
+
+    for salesperson in all_salespeople:
+        tracker.ensure_salesperson_exists(salesperson, date.year, date.month)
+
+        # Check if on leave
+        if leave_checker and leave_checker.is_on_leave(salesperson, date):
+            # Don't mark as absent if on leave - just skip
+            logger.info(f"{salesperson} on leave on {date.strftime('%Y-%m-%d')} - not marking absent")
+            continue
+
+        if salesperson in salespeople_present_set:
+            tracker.mark_present(salesperson, date)
+        else:
+            # Only mark absent if this is a past date
+            tracker.mark_absent(salesperson, date)
+
+    logger.info(f"✅ Updated attendance for {date.strftime('%Y-%m-%d')}")

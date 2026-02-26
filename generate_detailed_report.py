@@ -221,6 +221,42 @@ class DataProcessor:
 
 
 # ============================================================================
+# DAY VISITS GENERATOR
+# ============================================================================
+
+def _generate_day_visits_sheet(df_final: pd.DataFrame, reps: List[str]) -> pd.DataFrame:
+    """
+    Generate Day Visits sheet showing all customer interactions.
+
+    Args:
+        df_final: Merged visits and orders data
+        reps: List of all salespeople
+
+    Returns:
+        DataFrame with columns: Salesperson, Customer Name, Time Spent
+    """
+    visit_rows = []
+
+    for rep in sorted(reps):
+        rep_visits = df_final[df_final["sales_rep_final"] == rep]
+
+        if rep_visits.empty:
+            continue
+
+        for _, visit in rep_visits.iterrows():
+            customer_name = visit["customer_name_final"]
+            time_spent = visit.get("time_spent", "")
+
+            visit_rows.append({
+                "Salesperson": rep,
+                "Customer Name": customer_name,
+                "Time Spent": time_spent if time_spent else "-"
+            })
+
+    return pd.DataFrame(visit_rows)
+
+
+# ============================================================================
 # EXCEL STYLING
 # ============================================================================
 
@@ -448,6 +484,52 @@ class ExcelStyler:
             if attendance_cell.value:
                 height = self.calculate_row_height(str(attendance_cell.value), 60, self.config.body_font_size)
                 ws.row_dimensions[row_idx].height = max(25, height)
+
+    def apply_day_visits_styling(self, ws: Worksheet) -> None:
+        """Apply styling to Day Visits sheet."""
+        if not ws or ws.max_row == 0:
+            logger.warning("Empty worksheet, skipping styling")
+            return
+
+        thin_border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
+
+        # Header styling
+        header_font = Font(
+            name=self.config.header_font_name,
+            size=self.config.header_font_size,
+            bold=True,
+            color="FFFFFF"
+        )
+        header_fill = PatternFill(
+            start_color=self.config.header_color,
+            end_color=self.config.header_color,
+            fill_type="solid"
+        )
+
+        for cell in ws[1]:
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.border = thin_border
+
+        # Body styling
+        body_font = Font(name=self.config.body_font_name, size=self.config.body_font_size)
+
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+            for cell in row:
+                cell.font = body_font
+                cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+                cell.border = thin_border
+
+        # Set column widths
+        ws.column_dimensions['A'].width = 30  # Salesperson
+        ws.column_dimensions['B'].width = 40  # Customer Name
+        ws.column_dimensions['C'].width = 20  # Time Spent
 
     def format_money_columns(self, ws: Worksheet, columns: List[int]) -> None:
         """Format specific columns as money."""
@@ -681,15 +763,20 @@ def generate_detailed_report(
         reps,
         report_date.year,
         report_date.month,
-        leave_checker
+        leave_checker,
+        report_date  # Pass current date to only show past days
     )
 
-    # Create Excel file (SIMPLIFIED - only 3 sheets)
-    logger.info("📝 Creating simplified Excel file (Summary + Attendance only)...")
+    # Generate Day Visits sheet
+    logger.info("📋 Generating Day Visits sheet...")
+    df_day_visits = _generate_day_visits_sheet(df_final, reps)
+
+    # Create Excel file (4 sheets now: Day Summary, Attendance Grid, Monthly Attendance, Day Visits)
+    logger.info("📝 Creating Excel file with Day Summary, Attendance, and Day Visits...")
     with pd.ExcelWriter(config.output_file, engine="openpyxl") as writer:
-        # 1. Summary sheet
-        df_summary.to_excel(writer, index=False, sheet_name="Summary")
-        ws = writer.sheets["Summary"]
+        # 1. Day Summary sheet (renamed from "Summary")
+        df_summary.to_excel(writer, index=False, sheet_name="Day Summary")
+        ws = writer.sheets["Day Summary"]
         styler.apply_summary_styling(ws)
 
         # 2. Monthly Attendance Grid (for Excel viewing - with checkmarks)
@@ -702,14 +789,17 @@ def generate_detailed_report(
         ws_attendance_summary = writer.sheets[f"Monthly Attendance - {month_name}"]
         styler.apply_attendance_styling(ws_attendance_summary)
 
-        # NOTE: Individual rep sheets removed for simplified report
+        # 4. Day Visits sheet (customer visit details)
+        df_day_visits.to_excel(writer, index=False, sheet_name="Day Visits")
+        ws_day_visits = writer.sheets["Day Visits"]
+        styler.apply_day_visits_styling(ws_day_visits)
 
     # Export summary files (keep text summary for email)
     summary_gen.export_summary_text(df_summary, config.summary_text_file)
     summary_gen.export_summary_image(df_summary, config.summary_image_file)
 
-    logger.info(f"✅ Simplified report generation complete: {config.output_file}")
-    logger.info(f"✅ Report contains 3 sheets: Summary, Attendance Grid, Monthly Attendance")
+    logger.info(f"✅ Report generation complete: {config.output_file}")
+    logger.info(f"✅ Report contains 4 sheets: Day Summary, Attendance Grid, Monthly Attendance, Day Visits")
     logger.info(f"✅ Attendance tracking updated in: {config.attendance_json_file}")
 
 
