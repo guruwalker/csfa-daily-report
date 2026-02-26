@@ -1,0 +1,270 @@
+{% extends "base.html" %}
+
+{% block title %}Generate CSFA Report{% endblock %}
+
+{% block extra_css %}
+<style>
+    .page-title {
+        font-size: 2.5rem;
+        font-weight: 700;
+        margin-bottom: 0.5rem;
+        background: linear-gradient(135deg, var(--primary), var(--secondary));
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+    }
+    
+    .page-subtitle {
+        color: var(--text-muted);
+        font-size: 1.125rem;
+        margin-bottom: 3rem;
+    }
+    
+    .form-group {
+        margin-bottom: 1.5rem;
+    }
+    
+    .form-label {
+        display: block;
+        font-weight: 600;
+        margin-bottom: 0.5rem;
+        color: var(--text);
+    }
+    
+    .form-input {
+        width: 100%;
+        padding: 0.875rem 1rem;
+        border: 2px solid var(--border);
+        border-radius: 12px;
+        font-size: 1rem;
+        font-family: 'JetBrains Mono', monospace;
+        transition: all 0.2s;
+    }
+    
+    .form-input:focus {
+        outline: none;
+        border-color: var(--primary);
+        box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+    }
+    
+    .checkbox-wrapper {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        padding: 1rem;
+        background: var(--bg);
+        border-radius: 12px;
+        cursor: pointer;
+        transition: all 0.2s;
+    }
+    
+    .checkbox-wrapper:hover {
+        background: var(--border);
+    }
+    
+    .checkbox-wrapper input[type="checkbox"] {
+        width: 20px;
+        height: 20px;
+        cursor: pointer;
+    }
+    
+    .checkbox-label {
+        font-weight: 500;
+        cursor: pointer;
+    }
+    
+    .quick-select {
+        margin-bottom: 2rem;
+    }
+    
+    .quick-select-title {
+        font-weight: 600;
+        margin-bottom: 1rem;
+        color: var(--text);
+    }
+    
+    .date-buttons {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+        gap: 0.75rem;
+    }
+    
+    .date-btn {
+        padding: 0.75rem 1rem;
+        border: 2px solid var(--border);
+        border-radius: 12px;
+        background: var(--surface);
+        cursor: pointer;
+        transition: all 0.2s;
+        text-align: left;
+        font-family: 'Plus Jakarta Sans', sans-serif;
+    }
+    
+    .date-btn:hover {
+        border-color: var(--primary);
+        background: rgba(37, 99, 235, 0.05);
+    }
+    
+    .date-btn-date {
+        font-family: 'JetBrains Mono', monospace;
+        font-weight: 600;
+        color: var(--primary);
+        margin-bottom: 0.25rem;
+    }
+    
+    .date-btn-day {
+        font-size: 0.875rem;
+        color: var(--text-muted);
+    }
+    
+    .info-box {
+        background: linear-gradient(135deg, rgba(37, 99, 235, 0.1), rgba(16, 185, 129, 0.1));
+        border: 1px solid rgba(37, 99, 235, 0.2);
+        border-radius: 16px;
+        padding: 1.5rem;
+        margin-top: 2rem;
+    }
+    
+    .info-title {
+        font-weight: 600;
+        margin-bottom: 0.75rem;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+    
+    .info-list {
+        list-style: none;
+        padding-left: 0;
+    }
+    
+    .info-list li {
+        padding: 0.5rem 0;
+        padding-left: 1.5rem;
+        position: relative;
+    }
+    
+    .info-list li:before {
+        content: "✓";
+        position: absolute;
+        left: 0;
+        color: var(--secondary);
+        font-weight: 700;
+    }
+    
+    .btn-group {
+        display: flex;
+        gap: 1rem;
+        margin-top: 2rem;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1 class="page-title">Generate CSFA Report</h1>
+    <p class="page-subtitle">Select a date to generate or preview the daily sales force activity report</p>
+</div>
+
+<div class="card">
+    <form method="POST" action="{{ url_for('generate_report') }}" id="reportForm">
+        <!-- Quick Select Recent Dates -->
+        <div class="quick-select">
+            <div class="quick-select-title">📅 Quick Select (Recent Business Days)</div>
+            <div class="date-buttons">
+                {% for date_info in recent_dates[:5] %}
+                <button type="button" class="date-btn" onclick="selectDate('{{ date_info.date }}')">
+                    <div class="date-btn-date">{{ date_info.date }}</div>
+                    <div class="date-btn-day">{{ date_info.display.split(',')[0] }}</div>
+                </button>
+                {% endfor %}
+            </div>
+        </div>
+        
+        <!-- Manual Date Selection -->
+        <div class="form-group">
+            <label class="form-label" for="report_date">
+                📆 Report Date
+            </label>
+            <input 
+                type="date" 
+                id="report_date" 
+                name="report_date" 
+                class="form-input"
+                value="{{ default_date }}"
+                max="{{ default_date }}"
+                required
+            >
+            <small style="color: var(--text-muted); margin-top: 0.5rem; display: block;">
+                Select a weekday (Monday-Friday). Cannot select future dates or weekends.
+            </small>
+        </div>
+        
+        <!-- Email Option -->
+        <div class="form-group">
+            <label class="checkbox-wrapper">
+                <input type="checkbox" name="send_email" id="send_email">
+                <span class="checkbox-label">📧 Send email report after generation</span>
+            </label>
+        </div>
+        
+        <!-- Submit Buttons -->
+        <div class="btn-group">
+            <button type="submit" class="btn btn-primary">
+                🚀 Generate Report
+            </button>
+            <button type="button" class="btn btn-secondary" onclick="window.location.href='{{ url_for('index') }}'">
+                🔄 Reset
+            </button>
+        </div>
+    </form>
+    
+    <!-- Info Box -->
+    <div class="info-box">
+        <div class="info-title">
+            ℹ️ Report Information
+        </div>
+        <ul class="info-list">
+            <li>Reports are generated for business days (Monday-Friday)</li>
+            <li>Each report includes: Day Summary, Attendance Grid, Monthly Attendance, and Day Visits</li>
+            <li>Historical reports can be generated for past dates</li>
+            <li>Generated reports are available for download</li>
+        </ul>
+    </div>
+</div>
+
+<script>
+function selectDate(date) {
+    document.getElementById('report_date').value = date;
+    // Smooth scroll to form
+    document.getElementById('report_date').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    // Add a visual highlight
+    document.getElementById('report_date').style.boxShadow = '0 0 0 4px rgba(37, 99, 235, 0.2)';
+    setTimeout(() => {
+        document.getElementById('report_date').style.boxShadow = '';
+    }, 1000);
+}
+
+// Prevent selecting future dates or weekends
+document.getElementById('report_date').addEventListener('change', function(e) {
+    const selectedDate = new Date(e.target.value);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    // Check if future date
+    if (selectedDate > today) {
+        alert('Cannot select future dates');
+        e.target.value = '{{ default_date }}';
+        return;
+    }
+    
+    // Check if weekend
+    const dayOfWeek = selectedDate.getDay();
+    if (dayOfWeek === 0 || dayOfWeek === 6) {
+        alert('Cannot select weekends (Saturday/Sunday)');
+        e.target.value = '{{ default_date }}';
+        return;
+    }
+});
+</script>
+{% endblock %}
