@@ -11,7 +11,7 @@ Contains list of all salespeople and filtering rules.
 ALL_SALESPEOPLE = [
     "ANDRE MARQUEZA",
     "IMRAN AHMED",
-    "INÁCIO RODRIGUES",
+    # "INÁCIO RODRIGUES",
     "KUMAR CHAMPAKLAL",
     # "LAURA MARCIA",
     "RICARDO DINIS LANGA",
