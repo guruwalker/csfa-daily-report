@@ -262,7 +262,7 @@ def build_timesheet_params(date_range: str) -> Dict:
         "order[0][column]": 0,
         "order[0][dir]": "desc",
         "start": 0,
-        "length": 25,
+        "length": 200,
         "search[value]": "",
         "search[regex]": False,
     }
