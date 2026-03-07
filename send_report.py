@@ -26,40 +26,72 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
+# CLASSPROPERTY HELPER
+# ============================================================================
+
+class classproperty:
+    """
+    Descriptor for read-only class-level properties.
+    Allows @classproperty on classmethods so os.getenv() is called at
+    access time rather than at class definition time.
+    """
+    def __init__(self, func):
+        self.func = func
+
+    def __get__(self, obj, owner):
+        return self.func(owner)
+
+
+# ============================================================================
 # EMAIL CONFIGURATION
 # ============================================================================
 
 class EmailConfig:
-    """Email configuration from environment variables."""
+    """
+    Email configuration from environment variables.
 
-    # SMTP Settings
+    All properties are read lazily (at access time) so that changes made to
+    os.environ by the Flask app before calling send_report() are picked up
+    correctly. This is what makes test vs. live mode switching work.
+    """
+
+    # ---- SMTP Settings (static - these don't change between modes) ----
     SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.robbialac.co.mz")
     SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
     SENDER_EMAIL = os.getenv("SENDER_EMAIL", "innocent.maina@robbialac.co.mz")
     EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
+    SMTP_TIMEOUT = int(os.getenv("SMTP_TIMEOUT", "30"))
 
-    # Recipients (comma-separated in .env)
-    TO_RECIPIENTS = os.getenv("EMAIL_TO", "innocent.maina@crownpaints.co.ke").split(",")
-    CC_RECIPIENTS = os.getenv("EMAIL_CC", "daniel.ndirangu@robbialac.co.mz,isaac.mokua@robbialac.co.mz").split(",")
-    BCC_RECIPIENTS = os.getenv("EMAIL_BCC", "").split(",") if os.getenv("EMAIL_BCC") else []
-
-    # Email content
+    # ---- Static content settings ----
     EMAIL_SUBJECT_TEMPLATE = os.getenv("EMAIL_SUBJECT", "Tintas Berger CSFA Report - {date}")
     SENDER_NAME = os.getenv("SENDER_NAME", "Innocent Maina")
     RECIPIENT_NAME = os.getenv("RECIPIENT_NAME", "Mr. Hussein")
-
-    # Threading
-    EMAIL_THREAD_ID = os.getenv("EMAIL_THREAD_ID")
-
-    # Files
     EXCEL_FILE = os.getenv("OUTPUT_FILE", "Daily_CSFA_Report.xlsx")
     SUMMARY_SHEET = os.getenv("SUMMARY_SHEET", "Day Summary")
-
-    # SMTP timeout
-    SMTP_TIMEOUT = int(os.getenv("SMTP_TIMEOUT", "30"))
-
-    # Feature flags
     INCLUDE_MONTHLY_ATTENDANCE = os.getenv("INCLUDE_MONTHLY_ATTENDANCE", "true").lower() == "true"
+
+    # ---- Recipients and threading: READ LAZILY via properties ----
+    # These must be properties (not class-level assignments) so that when
+    # app.py sets os.environ["EMAIL_TO"] / os.environ["EMAIL_THREAD_ID"]
+    # before calling send_report(), the new values are actually used.
+
+    @classproperty
+    def TO_RECIPIENTS(cls) -> List[str]:
+        return os.getenv("EMAIL_TO", "innocent.maina@crownpaints.co.ke").split(",")
+
+    @classproperty
+    def CC_RECIPIENTS(cls) -> List[str]:
+        raw = os.getenv("EMAIL_CC", "")
+        return raw.split(",") if raw else []
+
+    @classproperty
+    def BCC_RECIPIENTS(cls) -> List[str]:
+        raw = os.getenv("EMAIL_BCC", "")
+        return raw.split(",") if raw else []
+
+    @classproperty
+    def EMAIL_THREAD_ID(cls) -> Optional[str]:
+        return os.getenv("EMAIL_THREAD_ID") or None
 
     @classmethod
     def validate(cls) -> None:
@@ -439,10 +471,10 @@ def _generate_kpi_section(df_summary: pd.DataFrame) -> str:
         return ""
 
 
-def _get_monthly_attendance_sheet_name(excel_file: str) -> str:
+def _get_attendance_grid_sheet_name(excel_file: str) -> str:
     """
-    Find the monthly attendance sheet name in the Excel file.
-    It should be named like "Monthly Attendance - February"
+    Find the Attendance Grid sheet name in the Excel file.
+    Named like "Attendance Grid - February".
 
     Args:
         excel_file: Path to Excel file
@@ -455,14 +487,144 @@ def _get_monthly_attendance_sheet_name(excel_file: str) -> str:
     try:
         wb = load_workbook(excel_file, read_only=True)
         for sheet_name in wb.sheetnames:
-            if sheet_name.startswith("Monthly Attendance -"):
+            if sheet_name.startswith("Attendance Grid -"):
                 wb.close()
                 return sheet_name
         wb.close()
     except Exception as e:
-        logger.warning(f"Could not search for attendance sheet: {e}")
+        logger.warning(f"Could not search for attendance grid sheet: {e}")
 
     return None
+
+
+def _generate_attendance_grid_html(df: pd.DataFrame, month_name: str) -> str:
+    """
+    Render the Attendance Grid DataFrame as an HTML table for email.
+
+    The grid has columns: Salesperson | 1 | 2 | 3 | ... | Summary
+    Cells contain ✓ (present), X (absent), L (leave), or "" (future/weekend).
+
+    Color coding matches the Excel sheet:
+      ✓  → light green
+      X  → light red
+      L  → light yellow
+      "" → no fill (future days)
+    """
+    if df is None or df.empty:
+        return ""
+
+    CELL_COLORS = {
+        "✓": "#C6EFCE",   # light green
+        "X": "#FFC7CE",   # light red / absent
+        "L": "#FFEB9C",   # light yellow / leave
+    }
+
+    TABLE_STYLE = (
+        "border-collapse: collapse; "
+        "width: 100%; "
+        "margin: 10px 0 20px 0; "
+        "font-family: Arial, sans-serif; "
+        "font-size: 12px;"
+    )
+    HEADER_STYLE = (
+        "background-color: #4F81BD; "
+        "color: #FFFFFF; "
+        "font-weight: bold; "
+        "padding: 6px 4px; "
+        "text-align: center; "
+        "border: 1px solid #2F5F8D; "
+        "white-space: nowrap;"
+    )
+    NAME_HEADER_STYLE = (
+        "background-color: #4F81BD; "
+        "color: #FFFFFF; "
+        "font-weight: bold; "
+        "padding: 6px 8px; "
+        "text-align: left; "
+        "border: 1px solid #2F5F8D;"
+    )
+    NAME_CELL_STYLE = (
+        "padding: 5px 8px; "
+        "border: 1px solid #ddd; "
+        "text-align: left; "
+        "color: #333; "
+        "white-space: nowrap;"
+    )
+    DAY_CELL_BASE = (
+        "padding: 5px 4px; "
+        "border: 1px solid #ddd; "
+        "text-align: center; "
+        "min-width: 18px;"
+    )
+    SUMMARY_CELL_STYLE = (
+        "padding: 5px 8px; "
+        "border: 1px solid #ddd; "
+        "text-align: left; "
+        "color: #333; "
+        "white-space: nowrap;"
+    )
+
+    columns = list(df.columns)  # ["Salesperson", "1", "2", ..., "Summary"]
+
+    html = f'<table style="{TABLE_STYLE}">'
+
+    # Header row
+    html += "<thead><tr>"
+    for col in columns:
+        if col == "Salesperson":
+            html += f'<th style="{NAME_HEADER_STYLE}">{col}</th>'
+        elif col == "Summary":
+            html += f'<th style="{HEADER_STYLE} text-align: left;">{col}</th>'
+        else:
+            html += f'<th style="{HEADER_STYLE}">{col}</th>'
+    html += "</tr></thead>"
+
+    # Data rows
+    html += "<tbody>"
+    for row_idx, (_, row) in enumerate(df.iterrows()):
+        bg = "#f9f9f9" if row_idx % 2 == 1 else "#ffffff"
+        html += f'<tr style="background-color: {bg};">'
+
+        for col in columns:
+            val = str(row[col]) if pd.notnull(row[col]) else ""
+
+            if col == "Salesperson":
+                html += f'<td style="{NAME_CELL_STYLE}">{val}</td>'
+            elif col == "Summary":
+                html += f'<td style="{SUMMARY_CELL_STYLE}">{val}</td>'
+            else:
+                # Day cell — apply colour based on value
+                cell_color = CELL_COLORS.get(val, bg)
+                html += (
+                    f'<td style="{DAY_CELL_BASE} background-color: {cell_color};">'
+                    f'{val}</td>'
+                )
+
+        html += "</tr>"
+    html += "</tbody></table>"
+
+    # Legend
+    legend_items = [
+        ("#C6EFCE", "✓ Present"),
+        ("#FFC7CE", "X Absent"),
+        ("#FFEB9C", "L Leave"),
+        ("#ffffff", "  Future"),
+    ]
+    legend_html = '<div style="font-family: Arial, sans-serif; font-size: 11px; margin-bottom: 10px;">'
+    legend_html += '<strong>Legend:</strong>&nbsp;&nbsp;'
+    for color, label in legend_items:
+        legend_html += (
+            f'<span style="display:inline-block; background:{color}; '
+            f'border:1px solid #ccc; padding: 2px 8px; margin-right:8px;">{label}</span>'
+        )
+    legend_html += '</div>'
+
+    return (
+        f'<h3 style="color: #4F81BD; margin-top: 30px;">'
+        f'Monthly Attendance Grid - {month_name}</h3>'
+        + legend_html
+        + html
+    )
 
 
 def _send_holiday_report(excel_file: str, date_str: str) -> bool:
@@ -630,26 +792,23 @@ def send_report(
             logger.error(f"❌ Failed to read Excel file: {e}")
             return False
 
-        # Read monthly attendance sheet if enabled
-        df_monthly_attendance = None
-        attendance_sheet_name = None
+        # Read Attendance Grid sheet if enabled
+        df_attendance_grid = None
+        attendance_grid_sheet_name = None
         month_name = None
 
         if EmailConfig.INCLUDE_MONTHLY_ATTENDANCE:
             try:
-                # Find the monthly attendance sheet
-                attendance_sheet_name = _get_monthly_attendance_sheet_name(excel_file)
+                attendance_grid_sheet_name = _get_attendance_grid_sheet_name(excel_file)
 
-                if attendance_sheet_name:
-                    logger.info(f"📖 Reading monthly attendance from sheet: {attendance_sheet_name}")
-                    df_monthly_attendance = pd.read_excel(excel_file, sheet_name=attendance_sheet_name)
-
-                    # Extract month name from sheet name
-                    month_name = attendance_sheet_name.split(" - ")[-1] if attendance_sheet_name else "This Month"
+                if attendance_grid_sheet_name:
+                    logger.info(f"📖 Reading attendance grid from sheet: {attendance_grid_sheet_name}")
+                    df_attendance_grid = pd.read_excel(excel_file, sheet_name=attendance_grid_sheet_name)
+                    month_name = attendance_grid_sheet_name.split(" - ")[-1] if attendance_grid_sheet_name else "This Month"
                 else:
-                    logger.warning("⚠️ Monthly attendance sheet not found")
+                    logger.warning("⚠️ Attendance Grid sheet not found")
             except Exception as e:
-                logger.warning(f"⚠️ Could not read monthly attendance sheet: {e}")
+                logger.warning(f"⚠️ Could not read attendance grid sheet: {e}")
                 logger.info("Continuing without attendance data in email...")
 
         # Generate KPI sections
@@ -661,34 +820,18 @@ def send_report(
         html_generator = HTMLTableGenerator()
         summary_html_table = html_generator.generate(df_summary, format_money=False)
 
-        # Generate monthly attendance table if available
+        # Generate attendance grid HTML if available
         monthly_attendance_html = ""
-        if df_monthly_attendance is not None and not df_monthly_attendance.empty:
-            logger.info("🎨 Generating monthly attendance table...")
-
-            # Check if attendance data has any actual records
-            has_actual_attendance = False
-            if "Attendance" in df_monthly_attendance.columns:
-                has_actual_attendance = not all(
-                    "No attendance" in str(val) for val in df_monthly_attendance["Attendance"]
-                )
-
-            if has_actual_attendance:
-                # Generate regular table for actual attendance data
-                monthly_attendance_html = html_generator.generate(
-                    df_monthly_attendance,
-                    format_money=False
-                )
-                monthly_attendance_html = f"""
-                <h3 style="color: #4F81BD; margin-top: 30px;">Monthly Attendance Summary - {month_name}</h3>
-                {monthly_attendance_html}
-                """
-            else:
-                # Show simple message for no attendance yet
-                monthly_attendance_html = f"""
-                <h3 style="color: #4F81BD; margin-top: 30px;">Monthly Attendance Summary - {month_name}</h3>
-                <p style="color: #666; font-style: italic;">No attendance recorded yet for {month_name}.</p>
-                """
+        if df_attendance_grid is not None and not df_attendance_grid.empty:
+            logger.info("🎨 Generating attendance grid table...")
+            monthly_attendance_html = _generate_attendance_grid_html(df_attendance_grid, month_name)
+        elif EmailConfig.INCLUDE_MONTHLY_ATTENDANCE:
+            monthly_attendance_html = (
+                f'<h3 style="color: #4F81BD; margin-top: 30px;">'
+                f'Monthly Attendance Grid - {month_name or "This Month"}</h3>'
+                f'<p style="color: #666; font-style: italic;">'
+                f'No attendance recorded yet for {month_name or "this month"}.</p>'
+            )
 
         # Combine sections (removed customer details table)
         summary_html = f"""

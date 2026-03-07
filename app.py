@@ -260,51 +260,63 @@ def send_email_route():
 
         logger.info(f"Sending email in {mode} mode for {filename}")
 
-        # Import send_report
-        from send_report import send_report
-        import os
+        # ----------------------------------------------------------------
+        # Snapshot current env vars so we can restore them after sending.
+        # We only touch the 3 keys that differ between test and live.
+        # ----------------------------------------------------------------
+        ENV_KEYS = ("EMAIL_TO", "EMAIL_CC", "EMAIL_THREAD_ID")
+        original_env = {k: os.environ.get(k) for k in ENV_KEYS}
 
-        # Temporarily override EMAIL_THREAD_ID based on mode
-        original_thread_id = os.environ.get('EMAIL_THREAD_ID')
-        original_to = os.environ.get('EMAIL_TO')
-
-        if mode == 'test':
-            # Use test thread ID and test recipient
-            test_thread_id = os.getenv('EMAIL_THREAD_ID_TEST', '')
-            test_to = os.getenv('EMAIL_TO_TEST', os.getenv('SENDER_EMAIL'))  # Default to sender
-
-            if test_thread_id:
-                os.environ['EMAIL_THREAD_ID'] = test_thread_id
+        def _set_or_remove(key: str, value: str | None):
+            """Set env var if value is non-empty, otherwise remove it."""
+            if value:
+                os.environ[key] = value
             else:
-                # Remove thread ID for test to create new thread
-                os.environ.pop('EMAIL_THREAD_ID', None)
+                os.environ.pop(key, None)
 
-            os.environ['EMAIL_TO'] = test_to
-            logger.info(f"📧 Test mode: Sending to {test_to}")
+        try:
+            if mode == 'test':
+                to = os.getenv('EMAIL_TO_TEST', os.getenv('SENDER_EMAIL', ''))
+                cc = os.getenv('EMAIL_CC_TEST', '')
+                thread_id = os.getenv('EMAIL_THREAD_ID_TEST', '')
 
-        else:  # live mode
-            # Use production thread ID and recipients
-            live_thread_id = os.getenv('EMAIL_THREAD_ID_LIVE', os.getenv('EMAIL_THREAD_ID', ''))
-            if live_thread_id:
-                os.environ['EMAIL_THREAD_ID'] = live_thread_id
-            # EMAIL_TO already set to production
-            logger.info(f"📧 Live mode: Sending to production recipients")
+                if not to:
+                    return jsonify({"success": False, "error": "EMAIL_TO_TEST not configured in .env"}), 400
 
-        # Send the email
-        success = send_report(
-            excel_file=str(report_path),
-            summary_sheet="Day Summary",
-            date_str=report_date_str
-        )
+                _set_or_remove("EMAIL_TO", to)
+                _set_or_remove("EMAIL_CC", cc)
+                _set_or_remove("EMAIL_THREAD_ID", thread_id)
+                logger.info(f"📧 Test mode → TO: {to}  THREAD: {thread_id or '(new thread)'}")
 
-        # Restore original environment
-        if original_thread_id:
-            os.environ['EMAIL_THREAD_ID'] = original_thread_id
-        else:
-            os.environ.pop('EMAIL_THREAD_ID', None)
+            else:  # live
+                to = os.getenv('EMAIL_TO_LIVE', '')
+                cc = os.getenv('EMAIL_CC_LIVE', '')
+                thread_id = os.getenv('EMAIL_THREAD_ID_LIVE', '')
 
-        if original_to:
-            os.environ['EMAIL_TO'] = original_to
+                if not to:
+                    return jsonify({"success": False, "error": "EMAIL_TO_LIVE not configured in .env"}), 400
+
+                _set_or_remove("EMAIL_TO", to)
+                _set_or_remove("EMAIL_CC", cc)
+                _set_or_remove("EMAIL_THREAD_ID", thread_id)
+                logger.info(f"📧 Live mode → TO: {to}  THREAD: {thread_id or '(new thread)'}")
+
+            # Import here so the lazy EmailConfig properties pick up the
+            # env-var changes we just made above.
+            from send_report import send_report
+            success = send_report(
+                excel_file=str(report_path),
+                summary_sheet="Day Summary",
+                date_str=report_date_str
+            )
+
+        finally:
+            # Always restore original env vars (even if send_report raises)
+            for key, original_value in original_env.items():
+                if original_value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = original_value
 
         if success:
             return jsonify({
@@ -315,7 +327,7 @@ def send_email_route():
         else:
             return jsonify({
                 "success": False,
-                "error": "Email sending failed - check logs"
+                "error": "Email sending failed - check server logs"
             }), 500
 
     except Exception as e:
@@ -325,6 +337,108 @@ def send_email_route():
             "success": False,
             "error": str(e)
         }), 500
+
+
+@app.route('/api/holidays-and-leave')
+def get_holidays_and_leave():
+    """Return current holidays and leave days for the UI."""
+    import json
+    from pathlib import Path
+
+    holidays_file = Path(os.getenv("HOLIDAYS_FILE", "holidays.json"))
+    leave_file = Path(os.getenv("LEAVE_FILE", "leave_days.json"))
+
+    holidays = []
+    if holidays_file.exists():
+        try:
+            holidays = json.loads(holidays_file.read_text()).get("holidays", [])
+        except Exception:
+            pass
+
+    leave_days = {}
+    if leave_file.exists():
+        try:
+            leave_days = json.loads(leave_file.read_text()).get("leave_days", {})
+        except Exception:
+            pass
+
+    from config import get_all_salespeople
+    return jsonify({
+        "holidays": sorted(holidays),
+        "leave_days": leave_days,
+        "salespeople": get_all_salespeople()
+    })
+
+
+@app.route('/api/holidays-and-leave', methods=['POST'])
+def update_holidays_and_leave():
+    """Update holidays.json and/or leave_days.json from the UI."""
+    import json
+    from pathlib import Path
+
+    data = request.get_json()
+    action = data.get("action")          # "add_holiday" | "remove_holiday" | "add_leave" | "remove_leave"
+    date_str = data.get("date")          # "YYYY-MM-DD"
+    person = data.get("person", "")      # salesperson name (leave actions only)
+
+    if not action or not date_str:
+        return jsonify({"success": False, "error": "action and date are required"}), 400
+
+    # Validate date format
+    try:
+        datetime.strptime(date_str, "%Y-%m-%d")
+    except ValueError:
+        return jsonify({"success": False, "error": "Invalid date format"}), 400
+
+    holidays_file = Path(os.getenv("HOLIDAYS_FILE", "holidays.json"))
+    leave_file = Path(os.getenv("LEAVE_FILE", "leave_days.json"))
+
+    try:
+        if action == "add_holiday":
+            obj = json.loads(holidays_file.read_text()) if holidays_file.exists() else {"holidays": []}
+            if date_str not in obj["holidays"]:
+                obj["holidays"].append(date_str)
+                obj["holidays"].sort()
+            holidays_file.write_text(json.dumps(obj, indent=2))
+            return jsonify({"success": True})
+
+        elif action == "remove_holiday":
+            if not holidays_file.exists():
+                return jsonify({"success": True})
+            obj = json.loads(holidays_file.read_text())
+            obj["holidays"] = [d for d in obj.get("holidays", []) if d != date_str]
+            holidays_file.write_text(json.dumps(obj, indent=2))
+            return jsonify({"success": True})
+
+        elif action == "add_leave":
+            if not person:
+                return jsonify({"success": False, "error": "person is required for leave actions"}), 400
+            obj = json.loads(leave_file.read_text()) if leave_file.exists() else {"leave_days": {}}
+            if person not in obj["leave_days"]:
+                obj["leave_days"][person] = []
+            if date_str not in obj["leave_days"][person]:
+                obj["leave_days"][person].append(date_str)
+                obj["leave_days"][person].sort()
+            leave_file.write_text(json.dumps(obj, indent=2))
+            return jsonify({"success": True})
+
+        elif action == "remove_leave":
+            if not person:
+                return jsonify({"success": False, "error": "person is required for leave actions"}), 400
+            if not leave_file.exists():
+                return jsonify({"success": True})
+            obj = json.loads(leave_file.read_text())
+            if person in obj.get("leave_days", {}):
+                obj["leave_days"][person] = [d for d in obj["leave_days"][person] if d != date_str]
+            leave_file.write_text(json.dumps(obj, indent=2))
+            return jsonify({"success": True})
+
+        else:
+            return jsonify({"success": False, "error": f"Unknown action: {action}"}), 400
+
+    except Exception as e:
+        logger.error(f"Error updating holidays/leave: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route('/health')

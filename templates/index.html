@@ -47,32 +47,6 @@
         box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
     }
 
-    .checkbox-wrapper {
-        display: flex;
-        align-items: center;
-        gap: 0.75rem;
-        padding: 1rem;
-        background: var(--bg);
-        border-radius: 12px;
-        cursor: pointer;
-        transition: all 0.2s;
-    }
-
-    .checkbox-wrapper:hover {
-        background: var(--border);
-    }
-
-    .checkbox-wrapper input[type="checkbox"] {
-        width: 20px;
-        height: 20px;
-        cursor: pointer;
-    }
-
-    .checkbox-label {
-        font-weight: 500;
-        cursor: pointer;
-    }
-
     .quick-select {
         margin-bottom: 2rem;
     }
@@ -157,6 +131,154 @@
         gap: 1rem;
         margin-top: 2rem;
     }
+
+    /* ── Management panels ────────────────────────────── */
+    .mgmt-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1.5rem;
+        margin-top: 2rem;
+    }
+
+    @media (max-width: 768px) {
+        .mgmt-grid { grid-template-columns: 1fr; }
+    }
+
+    .mgmt-card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 1.5rem;
+        box-shadow: var(--shadow);
+    }
+
+    .mgmt-card-title {
+        font-size: 1rem;
+        font-weight: 700;
+        margin-bottom: 1.25rem;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+
+    .mgmt-card-title.holiday { color: #b45309; }
+    .mgmt-card-title.leave   { color: #1d4ed8; }
+
+    .mgmt-row {
+        display: flex;
+        gap: 0.5rem;
+        margin-bottom: 0.75rem;
+    }
+
+    .mgmt-row .form-input {
+        padding: 0.6rem 0.75rem;
+        font-size: 0.9rem;
+        border-radius: 10px;
+        margin: 0;
+    }
+
+    .mgmt-row select.form-input {
+        font-family: 'Plus Jakarta Sans', sans-serif;
+        background: var(--surface);
+        cursor: pointer;
+    }
+
+    .btn-add {
+        padding: 0.6rem 1rem;
+        border-radius: 10px;
+        font-weight: 600;
+        font-size: 0.875rem;
+        border: none;
+        cursor: pointer;
+        white-space: nowrap;
+        transition: all 0.2s;
+        flex-shrink: 0;
+    }
+
+    .btn-add.holiday {
+        background: #fef3c7;
+        color: #92400e;
+        border: 1.5px solid #fcd34d;
+    }
+    .btn-add.holiday:hover { background: #fde68a; }
+
+    .btn-add.leave {
+        background: #dbeafe;
+        color: #1e40af;
+        border: 1.5px solid #93c5fd;
+    }
+    .btn-add.leave:hover { background: #bfdbfe; }
+
+    /* Tag list */
+    .tag-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        min-height: 2rem;
+    }
+
+    .tag {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+        padding: 0.3rem 0.7rem;
+        border-radius: 9999px;
+        font-size: 0.8rem;
+        font-family: 'JetBrains Mono', monospace;
+        font-weight: 600;
+        animation: tagIn 0.2s ease-out;
+    }
+
+    @keyframes tagIn {
+        from { opacity: 0; transform: scale(0.85); }
+        to   { opacity: 1; transform: scale(1); }
+    }
+
+    .tag.holiday {
+        background: #fef3c7;
+        color: #92400e;
+        border: 1.5px solid #fcd34d;
+    }
+
+    .tag.leave {
+        background: #dbeafe;
+        color: #1e40af;
+        border: 1.5px solid #93c5fd;
+    }
+
+    .tag-remove {
+        background: none;
+        border: none;
+        cursor: pointer;
+        font-size: 0.9rem;
+        line-height: 1;
+        opacity: 0.6;
+        padding: 0;
+        transition: opacity 0.15s;
+    }
+    .tag-remove:hover { opacity: 1; }
+
+    .tag-label {
+        font-size: 0.7rem;
+        opacity: 0.75;
+        font-weight: 400;
+        font-family: 'Plus Jakarta Sans', sans-serif;
+    }
+
+    .empty-state {
+        font-size: 0.85rem;
+        color: var(--text-muted);
+        font-style: italic;
+    }
+
+    .mgmt-status {
+        font-size: 0.8rem;
+        margin-top: 0.5rem;
+        min-height: 1.2em;
+        transition: opacity 0.3s;
+    }
+    .mgmt-status.ok  { color: #065f46; }
+    .mgmt-status.err { color: #991b1b; }
 </style>
 {% endblock %}
 
@@ -225,32 +347,215 @@
     </div>
 </div>
 
+<!-- ── Holiday & Leave Management ─────────────────────────────────── -->
+<h2 style="font-size: 1.25rem; font-weight: 700; margin: 2.5rem 0 0.25rem; color: var(--text);">
+    📋 Holidays &amp; Leave Days
+</h2>
+<p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 0;">
+    Changes save instantly to <code>holidays.json</code> and <code>leave_days.json</code>.
+</p>
+
+<div class="mgmt-grid">
+
+    <!-- ── Holidays ─────────────────────────────── -->
+    <div class="mgmt-card">
+        <div class="mgmt-card-title holiday">🏖️ Public Holidays</div>
+
+        <div class="mgmt-row">
+            <input type="date" id="holidayDate" class="form-input" placeholder="YYYY-MM-DD">
+            <button class="btn-add holiday" onclick="addHoliday()">+ Add</button>
+        </div>
+        <div class="mgmt-status" id="holidayStatus"></div>
+
+        <div style="margin-top: 1rem;">
+            <div style="font-size: 0.75rem; font-weight: 600; color: var(--text-muted); margin-bottom: 0.5rem; text-transform: uppercase; letter-spacing: 0.05em;">Current Holidays</div>
+            <div class="tag-list" id="holidayTags">
+                <span class="empty-state">Loading…</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- ── Leave Days ────────────────────────────── -->
+    <div class="mgmt-card">
+        <div class="mgmt-card-title leave">🌴 Leave Days</div>
+
+        <div class="mgmt-row" style="flex-wrap: wrap; gap: 0.5rem;">
+            <select id="leavePerson" class="form-input" style="flex: 1; min-width: 140px;">
+                <option value="">— Select person —</option>
+            </select>
+            <input type="date" id="leaveDate" class="form-input" style="flex: 1; min-width: 130px;">
+            <button class="btn-add leave" onclick="addLeave()">+ Add</button>
+        </div>
+        <div class="mgmt-status" id="leaveStatus"></div>
+
+        <div style="margin-top: 1rem;">
+            <div style="font-size: 0.75rem; font-weight: 600; color: var(--text-muted); margin-bottom: 0.5rem; text-transform: uppercase; letter-spacing: 0.05em;">Current Leave</div>
+            <div class="tag-list" id="leaveTags">
+                <span class="empty-state">Loading…</span>
+            </div>
+        </div>
+    </div>
+
+</div><!-- /mgmt-grid -->
+
 <script>
-function selectDate(date) {
-    document.getElementById('report_date').value = date;
-    // Smooth scroll to form
-    document.getElementById('report_date').scrollIntoView({ behavior: 'smooth', block: 'center' });
-    // Add a visual highlight
-    document.getElementById('report_date').style.boxShadow = '0 0 0 4px rgba(37, 99, 235, 0.2)';
-    setTimeout(() => {
-        document.getElementById('report_date').style.boxShadow = '';
-    }, 1000);
+// ── Helpers ────────────────────────────────────────────────────────
+
+function showStatus(id, msg, isError) {
+    const el = document.getElementById(id);
+    el.textContent = msg;
+    el.className = 'mgmt-status ' + (isError ? 'err' : 'ok');
+    setTimeout(() => { el.textContent = ''; el.className = 'mgmt-status'; }, 3000);
 }
 
-// Prevent selecting future dates or weekends
+async function api(action, date, person) {
+    const body = { action, date };
+    if (person) body.person = person;
+    const r = await fetch('/api/holidays-and-leave', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+    });
+    return r.json();
+}
+
+// ── Load current state ────────────────────────────────────────────
+
+async function loadState() {
+    const r = await fetch('/api/holidays-and-leave');
+    const data = await r.json();
+
+    // Populate person dropdown
+    const sel = document.getElementById('leavePerson');
+    sel.innerHTML = '<option value="">— Select person —</option>';
+    data.salespeople.forEach(p => {
+        const opt = document.createElement('option');
+        opt.value = opt.textContent = p;
+        sel.appendChild(opt);
+    });
+
+    renderHolidayTags(data.holidays);
+    renderLeaveTags(data.leave_days);
+}
+
+// ── Holidays ──────────────────────────────────────────────────────
+
+function renderHolidayTags(holidays) {
+    const container = document.getElementById('holidayTags');
+    if (!holidays.length) {
+        container.innerHTML = '<span class="empty-state">No holidays added yet.</span>';
+        return;
+    }
+    container.innerHTML = '';
+    holidays.forEach(date => {
+        const tag = document.createElement('span');
+        tag.className = 'tag holiday';
+        tag.innerHTML = `${date}<button class="tag-remove" onclick="removeHoliday('${date}')" title="Remove">✕</button>`;
+        container.appendChild(tag);
+    });
+}
+
+async function addHoliday() {
+    const date = document.getElementById('holidayDate').value;
+    if (!date) { showStatus('holidayStatus', 'Please pick a date first.', true); return; }
+
+    const res = await api('add_holiday', date);
+    if (res.success) {
+        document.getElementById('holidayDate').value = '';
+        showStatus('holidayStatus', `✓ ${date} added as holiday.`, false);
+        loadState();
+    } else {
+        showStatus('holidayStatus', res.error || 'Failed to save.', true);
+    }
+}
+
+async function removeHoliday(date) {
+    const res = await api('remove_holiday', date);
+    if (res.success) {
+        showStatus('holidayStatus', `✓ ${date} removed.`, false);
+        loadState();
+    } else {
+        showStatus('holidayStatus', res.error || 'Failed to remove.', true);
+    }
+}
+
+// ── Leave Days ────────────────────────────────────────────────────
+
+function renderLeaveTags(leaveDays) {
+    const container = document.getElementById('leaveTags');
+    const entries = [];
+    Object.entries(leaveDays).forEach(([person, dates]) => {
+        dates.forEach(date => entries.push({ person, date }));
+    });
+
+    if (!entries.length) {
+        container.innerHTML = '<span class="empty-state">No leave days added yet.</span>';
+        return;
+    }
+
+    // Sort by date then person
+    entries.sort((a, b) => a.date.localeCompare(b.date) || a.person.localeCompare(b.person));
+
+    container.innerHTML = '';
+    entries.forEach(({ person, date }) => {
+        const tag = document.createElement('span');
+        tag.className = 'tag leave';
+        // Short name: first word only, to keep tags compact
+        const shortName = person.split(' ')[0];
+        tag.innerHTML =
+            `<span class="tag-label">${shortName}</span> ${date}` +
+            `<button class="tag-remove" onclick="removeLeave('${person}', '${date}')" title="Remove ${person} – ${date}">✕</button>`;
+        container.appendChild(tag);
+    });
+}
+
+async function addLeave() {
+    const person = document.getElementById('leavePerson').value;
+    const date   = document.getElementById('leaveDate').value;
+
+    if (!person) { showStatus('leaveStatus', 'Please select a person.', true); return; }
+    if (!date)   { showStatus('leaveStatus', 'Please pick a date first.', true); return; }
+
+    const res = await api('add_leave', date, person);
+    if (res.success) {
+        document.getElementById('leaveDate').value = '';
+        showStatus('leaveStatus', `✓ Leave added for ${person} on ${date}.`, false);
+        loadState();
+    } else {
+        showStatus('leaveStatus', res.error || 'Failed to save.', true);
+    }
+}
+
+async function removeLeave(person, date) {
+    const res = await api('remove_leave', date, person);
+    if (res.success) {
+        showStatus('leaveStatus', `✓ Leave removed for ${person} on ${date}.`, false);
+        loadState();
+    } else {
+        showStatus('leaveStatus', res.error || 'Failed to remove.', true);
+    }
+}
+
+// ── Report date picker ────────────────────────────────────────────
+
+function selectDate(date) {
+    document.getElementById('report_date').value = date;
+    document.getElementById('report_date').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    document.getElementById('report_date').style.boxShadow = '0 0 0 4px rgba(37, 99, 235, 0.2)';
+    setTimeout(() => { document.getElementById('report_date').style.boxShadow = ''; }, 1000);
+}
+
 document.getElementById('report_date').addEventListener('change', function(e) {
     const selectedDate = new Date(e.target.value);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    // Check if future date
     if (selectedDate > today) {
         alert('Cannot select future dates');
         e.target.value = '{{ default_date }}';
         return;
     }
 
-    // Check if weekend
     const dayOfWeek = selectedDate.getDay();
     if (dayOfWeek === 0 || dayOfWeek === 6) {
         alert('Cannot select weekends (Saturday/Sunday)');
@@ -258,5 +563,8 @@ document.getElementById('report_date').addEventListener('change', function(e) {
         return;
     }
 });
+
+// ── Boot ──────────────────────────────────────────────────────────
+loadState();
 </script>
 {% endblock %}
