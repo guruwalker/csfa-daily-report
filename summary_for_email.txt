@@ -1,10 +1,10 @@
         SALESPERSON CUSTOMERS VISITED       APP USAGE
-     ANDRE MARQUEZA                 7        Used App
-    FRANCISCO TOMAS                 6        Used App
+     ANDRE MARQUEZA                 5        Used App
+    FRANCISCO TOMAS                 3        Used App
     HENRIQUE BERTUR                 0 Did Not Use App
-        IMRAN AHMED                 6        Used App
-       ITO BENEDITO                10        Used App
+        IMRAN AHMED                 0 Did Not Use App
+       ITO BENEDITO                 6        Used App
    KUMAR CHAMPAKLAL                 4        Used App
-RICARDO DINIS LANGA                 9        Used App
-   RICARDO MACUACUA                 9        Used App
-      SAIDATA ZALIA                 3        Used App
+RICARDO DINIS LANGA                 6        Used App
+   RICARDO MACUACUA                 8        Used App
+      SAIDATA ZALIA                 1        Used App
