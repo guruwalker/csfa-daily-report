@@ -3,99 +3,27 @@
     "02": {
       "ANDRE MARQUEZA": [],
       "IMRAN AHMED": [],
-      "IN\u00c1CIO RODRIGUES": [
-        16,
-        17,
-        18,
-        19,
-        20,
-        23,
-        24,
-        25,
-        26,
-        27
-      ],
+      "IN\u00c1CIO RODRIGUES": [16, 17, 18, 19, 20, 23, 24, 25, 26, 27],
       "KUMAR CHAMPAKLAL": [
-        2,
-        4,
-        6,
-        9,
-        10,
-        12,
-        13,
-        16,
-        17,
-        18,
-        19,
-        20,
-        23,
-        24,
-        25,
-        26,
-        27
+        2, 4, 6, 9, 10, 12, 13, 16, 17, 18, 19, 20, 23, 24, 25, 26, 27
       ],
-      "RICARDO MACUACUA": [
-        10,
-        12,
-        13,
-        16,
-        17,
-        23,
-        24,
-        25,
-        26,
-        27
-      ],
-      "FRANCISCO TOMAS": [
-        23,
-        26,
-        27
-      ],
-      "HENRIQUE BERTUR": [
-        23,
-        24,
-        25
-      ],
-      "SAIDATA ZALIA": [
-        23,
-        24,
-        25,
-        26,
-        27
-      ],
+      "RICARDO MACUACUA": [10, 12, 13, 16, 17, 23, 24, 25, 26, 27],
+      "FRANCISCO TOMAS": [23, 26, 27],
+      "HENRIQUE BERTUR": [23, 24, 25],
+      "SAIDATA ZALIA": [23, 24, 25, 26, 27],
       "ITO BENEDITO": [],
       "RICARDO DINIS LANGA": []
     },
     "03": {
       "ANDRE MARQUEZA": [],
       "FRANCISCO TOMAS": [],
-      "HENRIQUE BERTUR": [
-        2,
-        4,
-        10,
-        11
-      ],
-      "IMRAN AHMED": [
-        4,
-        5,
-        6,
-        9,
-        11
-      ],
+      "HENRIQUE BERTUR": [2, 4, 10, 11],
+      "IMRAN AHMED": [4, 5, 6, 9, 11],
       "ITO BENEDITO": [],
-      "KUMAR CHAMPAKLAL": [
-        2
-      ],
+      "KUMAR CHAMPAKLAL": [2],
       "RICARDO DINIS LANGA": [],
-      "RICARDO MACUACUA": [
-        2,
-        3
-      ],
-      "SAIDATA ZALIA": [
-        2,
-        3,
-        4
-      ]
+      "RICARDO MACUACUA": [2, 3],
+      "SAIDATA ZALIA": [2, 3, 4]
     }
   }
 }
