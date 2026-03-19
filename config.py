@@ -19,7 +19,8 @@ ALL_SALESPEOPLE = [
     "FRANCISCO TOMAS",
     "SAIDATA ZALIA",
     "HENRIQUE BERTUR",
-    "RICARDO MACUACUA"
+    # "RICARDO MACUACUA"
+    "ADERITO MACHOVO"
 ]
 
 # Accounts to exclude from all reports (test accounts, etc.)
