@@ -19,8 +19,8 @@ ALL_SALESPEOPLE = [
     "FRANCISCO TOMAS",
     "SAIDATA ZALIA",
     "HENRIQUE BERTUR",
-    # "RICARDO MACUACUA"
-    "ADERITO MACHOVO"
+    "RICARDO MACUACUA",   # <-- comma was missing here, causing concatenation with next entry
+    "ADERITO MACHOVO",
 ]
 
 # Accounts to exclude from all reports (test accounts, etc.)
@@ -43,7 +43,7 @@ def normalize_name(name: str) -> str:
         name: Original name
 
     Returns:
-        Normalized name (trimmed, title case)
+        Normalized name (trimmed)
     """
     if not name:
         return ""

@@ -1,6 +1,8 @@
 """
 CSFA Report Web Interface
 Flask application for generating and previewing reports with date selection.
+
+Updated: Added /api/suspensions and /api/new-starters endpoints.
 """
 
 from flask import Flask, render_template, request, send_file, jsonify, flash, redirect, url_for
@@ -10,7 +12,6 @@ import logging
 from pathlib import Path
 import traceback
 
-# Import local modules
 from generate_detailed_report import generate_detailed_report, ReportConfig
 from main import Config as MainConfig, fetch_timesheet_data, fetch_orders_data, format_date_for_api, format_date_range
 from holiday_checker import is_holiday
@@ -18,14 +19,12 @@ from holiday_checker import is_holiday
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "csfa-report-secret-key-change-in-production")
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# Configure upload folder for generated reports
 REPORTS_FOLDER = Path("generated_reports")
 REPORTS_FOLDER.mkdir(exist_ok=True)
 
@@ -35,23 +34,16 @@ REPORTS_FOLDER.mkdir(exist_ok=True)
 # ============================================================================
 
 def validate_date(date_str: str) -> tuple[bool, str, datetime]:
-    """
-    Validate date string and return parsed datetime.
-
-    Returns:
-        Tuple of (is_valid, error_message, datetime_object)
-    """
+    """Validate date string and return parsed datetime."""
     if not date_str:
         return False, "Date is required", None
 
     try:
         report_date = datetime.strptime(date_str, "%Y-%m-%d")
 
-        # Check if date is not in the future
         if report_date.date() > datetime.now().date():
             return False, "Cannot generate reports for future dates", None
 
-        # Check if date is a weekend
         if report_date.weekday() >= 5:
             return False, "Cannot generate reports for weekends (Saturday/Sunday)", None
 
@@ -62,12 +54,7 @@ def validate_date(date_str: str) -> tuple[bool, str, datetime]:
 
 
 def get_report_summary(report_file: str) -> dict:
-    """
-    Extract summary information from generated report.
-
-    Returns:
-        Dictionary with report stats
-    """
+    """Extract summary information from generated report."""
     import pandas as pd
     from openpyxl import load_workbook
 
@@ -75,15 +62,12 @@ def get_report_summary(report_file: str) -> dict:
         if not os.path.exists(report_file):
             return {"error": "Report file not found"}
 
-        # Read Day Summary sheet
         df_summary = pd.read_excel(report_file, sheet_name="Day Summary")
 
-        # Calculate stats
         total_visited = int(df_summary["CUSTOMERS VISITED"].sum())
         active_reps = int(df_summary[df_summary["APP USAGE"] == "Used App"].shape[0])
         total_reps = len(df_summary)
 
-        # Get sheet names
         wb = load_workbook(report_file, read_only=True)
         sheets = wb.sheetnames
         wb.close()
@@ -107,16 +91,14 @@ def get_report_summary(report_file: str) -> dict:
 @app.route('/')
 def index():
     """Home page with date selection form."""
-    # Get default date (today)
     default_date = datetime.now().strftime("%Y-%m-%d")
 
-    # Get last 30 business days for quick selection
     today = datetime.now()
     recent_dates = []
 
     for i in range(30):
         date = today - timedelta(days=i)
-        if date.weekday() < 5:  # Weekday
+        if date.weekday() < 5:
             recent_dates.append({
                 "date": date.strftime("%Y-%m-%d"),
                 "display": date.strftime("%A, %B %d, %Y")
@@ -131,10 +113,8 @@ def index():
 def generate_report():
     """Generate report for selected date."""
     try:
-        # Get form data
         report_date_str = request.form.get('report_date')
 
-        # Validate date
         is_valid, error_msg, report_date = validate_date(report_date_str)
         if not is_valid:
             flash(error_msg, 'error')
@@ -142,31 +122,25 @@ def generate_report():
 
         logger.info(f"Generating report for {report_date_str}")
 
-        # Check if holiday
         if is_holiday(report_date):
             flash(f"{report_date_str} is a public holiday. Generating holiday report...", 'info')
 
-        # Validate API credentials
         MainConfig.validate()
 
-        # Calculate API dates
         order_date = format_date_for_api(report_date)
         order_date_range = format_date_range(report_date)
 
-        # Fetch data
         logger.info("Fetching data from API...")
         flash("Fetching data from API...", 'info')
 
         orders_data = fetch_orders_data(order_date, order_date_range)
         visits_data = fetch_timesheet_data(order_date_range)
 
-        # Generate report
         logger.info("Generating Excel report...")
         flash("Generating Excel report...", 'info')
 
         report_config = ReportConfig.from_env()
 
-        # Save to dated filename
         report_filename = f"CSFA_Report_{report_date_str}.xlsx"
         report_path = REPORTS_FOLDER / report_filename
         report_config.output_file = str(report_path)
@@ -175,14 +149,13 @@ def generate_report():
 
         flash("Report generated successfully!", 'success')
 
-        # Get report summary
         summary = get_report_summary(str(report_path))
 
         return render_template('result.html',
                              report_date=report_date_str,
                              report_file=report_filename,
                              summary=summary,
-                             email_sent=False)  # Email not sent yet
+                             email_sent=False)
 
     except Exception as e:
         logger.error(f"Error generating report: {e}")
@@ -225,10 +198,8 @@ def preview_report(filename):
 
         summary = get_report_summary(str(report_path))
 
-        # Read first few rows of Day Summary for preview
         import pandas as pd
         df = pd.read_excel(report_path, sheet_name="Day Summary")
-
         preview_html = df.head(10).to_html(classes='table table-striped', index=False)
 
         return jsonify({
@@ -247,7 +218,7 @@ def send_email_route():
     try:
         data = request.get_json()
         filename = data.get('filename')
-        mode = data.get('mode', 'test')  # 'test' or 'live'
+        mode = data.get('mode', 'test')
         report_date_str = data.get('report_date')
 
         if not filename:
@@ -260,15 +231,10 @@ def send_email_route():
 
         logger.info(f"Sending email in {mode} mode for {filename}")
 
-        # ----------------------------------------------------------------
-        # Snapshot current env vars so we can restore them after sending.
-        # We only touch the 3 keys that differ between test and live.
-        # ----------------------------------------------------------------
         ENV_KEYS = ("EMAIL_TO", "EMAIL_CC", "EMAIL_THREAD_ID")
         original_env = {k: os.environ.get(k) for k in ENV_KEYS}
 
-        def _set_or_remove(key: str, value: str | None):
-            """Set env var if value is non-empty, otherwise remove it."""
+        def _set_or_remove(key: str, value):
             if value:
                 os.environ[key] = value
             else:
@@ -288,7 +254,7 @@ def send_email_route():
                 _set_or_remove("EMAIL_THREAD_ID", thread_id)
                 logger.info(f"📧 Test mode → TO: {to}  THREAD: {thread_id or '(new thread)'}")
 
-            else:  # live
+            else:
                 to = os.getenv('EMAIL_TO_LIVE', '')
                 cc = os.getenv('EMAIL_CC_LIVE', '')
                 thread_id = os.getenv('EMAIL_THREAD_ID_LIVE', '')
@@ -301,8 +267,6 @@ def send_email_route():
                 _set_or_remove("EMAIL_THREAD_ID", thread_id)
                 logger.info(f"📧 Live mode → TO: {to}  THREAD: {thread_id or '(new thread)'}")
 
-            # Import here so the lazy EmailConfig properties pick up the
-            # env-var changes we just made above.
             from send_report import send_report
             success = send_report(
                 excel_file=str(report_path),
@@ -311,7 +275,6 @@ def send_email_route():
             )
 
         finally:
-            # Always restore original env vars (even if send_report raises)
             for key, original_value in original_env.items():
                 if original_value is None:
                     os.environ.pop(key, None)
@@ -333,11 +296,12 @@ def send_email_route():
     except Exception as e:
         logger.error(f"Error sending email: {e}")
         logger.error(traceback.format_exc())
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
+        return jsonify({"success": False, "error": str(e)}), 500
 
+
+# ============================================================================
+# HOLIDAYS & LEAVE ENDPOINTS (unchanged)
+# ============================================================================
 
 @app.route('/api/holidays-and-leave')
 def get_holidays_and_leave():
@@ -377,14 +341,13 @@ def update_holidays_and_leave():
     from pathlib import Path
 
     data = request.get_json()
-    action = data.get("action")          # "add_holiday" | "remove_holiday" | "add_leave" | "remove_leave"
-    date_str = data.get("date")          # "YYYY-MM-DD"
-    person = data.get("person", "")      # salesperson name (leave actions only)
+    action = data.get("action")
+    date_str = data.get("date")
+    person = data.get("person", "")
 
     if not action or not date_str:
         return jsonify({"success": False, "error": "action and date are required"}), 400
 
-    # Validate date format
     try:
         datetime.strptime(date_str, "%Y-%m-%d")
     except ValueError:
@@ -441,9 +404,169 @@ def update_holidays_and_leave():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+# ============================================================================
+# SUSPENSIONS ENDPOINT
+# ============================================================================
+
+@app.route('/api/suspensions', methods=['GET'])
+def get_suspensions():
+    """Return current suspended salespeople."""
+    import json
+    from pathlib import Path
+    from config import get_all_salespeople
+
+    suspended_file = Path(os.getenv("SUSPENDED_FILE", "suspended_salespeople.json"))
+    suspended = {}
+    if suspended_file.exists():
+        try:
+            suspended = json.loads(suspended_file.read_text()).get("suspended", {})
+        except Exception:
+            pass
+
+    return jsonify({
+        "suspended": suspended,
+        "salespeople": get_all_salespeople()
+    })
+
+
+@app.route('/api/suspensions', methods=['POST'])
+def update_suspensions():
+    """
+    Add or remove a suspension.
+
+    Expected JSON:
+      { "action": "suspend",   "person": "JOHN DOE", "date": "2026-03-20" }
+      { "action": "reinstate", "person": "JOHN DOE" }
+    """
+    import json
+    from pathlib import Path
+
+    data = request.get_json()
+    action = data.get("action")   # "suspend" | "reinstate"
+    person = data.get("person", "").strip()
+    date_str = data.get("date", "")
+
+    if not action or not person:
+        return jsonify({"success": False, "error": "action and person are required"}), 400
+
+    if action == "suspend" and not date_str:
+        return jsonify({"success": False, "error": "date is required for suspend action"}), 400
+
+    if date_str:
+        try:
+            datetime.strptime(date_str, "%Y-%m-%d")
+        except ValueError:
+            return jsonify({"success": False, "error": "Invalid date format (use YYYY-MM-DD)"}), 400
+
+    suspended_file = Path(os.getenv("SUSPENDED_FILE", "suspended_salespeople.json"))
+
+    try:
+        obj = json.loads(suspended_file.read_text()) if suspended_file.exists() else {"suspended": {}}
+
+        if action == "suspend":
+            obj["suspended"][person] = date_str
+            logger.info(f"Suspended {person} from {date_str}")
+
+        elif action == "reinstate":
+            obj["suspended"].pop(person, None)
+            logger.info(f"Reinstated {person}")
+
+        else:
+            return jsonify({"success": False, "error": f"Unknown action: {action}"}), 400
+
+        suspended_file.write_text(json.dumps(obj, indent=2))
+        return jsonify({"success": True})
+
+    except Exception as e:
+        logger.error(f"Error updating suspensions: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# ============================================================================
+# NEW STARTERS ENDPOINT
+# ============================================================================
+
+@app.route('/api/new-starters', methods=['GET'])
+def get_new_starters():
+    """Return current new starter records."""
+    import json
+    from pathlib import Path
+    from config import get_all_salespeople
+
+    starters_file = Path(os.getenv("NEW_STARTERS_FILE", "new_starters.json"))
+    new_starters = {}
+    if starters_file.exists():
+        try:
+            new_starters = json.loads(starters_file.read_text()).get("new_starters", {})
+        except Exception:
+            pass
+
+    return jsonify({
+        "new_starters": new_starters,
+        "salespeople": get_all_salespeople()
+    })
+
+
+@app.route('/api/new-starters', methods=['POST'])
+def update_new_starters():
+    """
+    Add or remove a new starter record.
+
+    Expected JSON:
+      { "action": "add",    "person": "JOHN DOE", "date": "2026-03-20" }
+      { "action": "remove", "person": "JOHN DOE" }
+    """
+    import json
+    from pathlib import Path
+
+    data = request.get_json()
+    action = data.get("action")   # "add" | "remove"
+    person = data.get("person", "").strip()
+    date_str = data.get("date", "")
+
+    if not action or not person:
+        return jsonify({"success": False, "error": "action and person are required"}), 400
+
+    if action == "add" and not date_str:
+        return jsonify({"success": False, "error": "date is required for add action"}), 400
+
+    if date_str:
+        try:
+            datetime.strptime(date_str, "%Y-%m-%d")
+        except ValueError:
+            return jsonify({"success": False, "error": "Invalid date format (use YYYY-MM-DD)"}), 400
+
+    starters_file = Path(os.getenv("NEW_STARTERS_FILE", "new_starters.json"))
+
+    try:
+        obj = json.loads(starters_file.read_text()) if starters_file.exists() else {"new_starters": {}}
+
+        if action == "add":
+            obj["new_starters"][person] = date_str
+            logger.info(f"Registered new starter {person} from {date_str}")
+
+        elif action == "remove":
+            obj["new_starters"].pop(person, None)
+            logger.info(f"Removed new starter record for {person}")
+
+        else:
+            return jsonify({"success": False, "error": f"Unknown action: {action}"}), 400
+
+        starters_file.write_text(json.dumps(obj, indent=2))
+        return jsonify({"success": True})
+
+    except Exception as e:
+        logger.error(f"Error updating new starters: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# ============================================================================
+# HEALTH & ERROR HANDLERS
+# ============================================================================
+
 @app.route('/health')
 def health():
-    """Health check endpoint for monitoring."""
+    """Health check endpoint."""
     return jsonify({
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
@@ -451,10 +574,6 @@ def health():
         "reports_count": len(list(REPORTS_FOLDER.glob("*.xlsx")))
     })
 
-
-# ============================================================================
-# ERROR HANDLERS
-# ============================================================================
 
 @app.errorhandler(404)
 def not_found(e):
@@ -471,7 +590,6 @@ def server_error(e):
 # ============================================================================
 
 if __name__ == '__main__':
-    # Check for required environment variables
     try:
         MainConfig.validate()
         logger.info("✅ Configuration validated")
@@ -479,7 +597,6 @@ if __name__ == '__main__':
         logger.error(f"❌ Configuration error: {e}")
         logger.warning("App will start but report generation may fail")
 
-    # Run app
     port = int(os.getenv('PORT', 5000))
     debug = os.getenv('FLASK_DEBUG', 'False').lower() == 'true'
 

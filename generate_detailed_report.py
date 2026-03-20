@@ -3,6 +3,8 @@ Simplified CSFA Report Generator with Monthly Attendance Tracking
 Generates Excel reports with visits, orders, and attendance.
 Focuses on customer visits only (no "customers called" metric).
 Simplified structure: Summary + Attendance sheets only (no individual rep sheets).
+
+Updated: Supports suspended salespeople and new starters.
 """
 
 import pandas as pd
@@ -25,10 +27,17 @@ except ImportError:
 
 from api_client import get_order_details
 from config import is_excluded_account, get_all_salespeople, normalize_name
-from attendance_tracker import AttendanceTracker, update_attendance_for_date, generate_monthly_attendance_summary, generate_monthly_attendance_grid
+from attendance_tracker import (
+    AttendanceTracker,
+    update_attendance_for_date,
+    generate_monthly_attendance_summary,
+    generate_monthly_attendance_grid,
+)
 from date_utils import get_report_date
 from holiday_checker import HolidayChecker
 from leave_checker import LeaveChecker
+from suspension_checker import SuspensionChecker
+from new_starter_checker import NewStarterChecker
 
 # Configure logging
 logging.basicConfig(
@@ -52,11 +61,12 @@ class ReportConfig:
 
     # Styling colors
     header_color: str = "4F81BD"
-    customer_fill_color: str = "4BACC6"  # Bright blue
-    product_header_color: str = "92D050"  # Light green
+    customer_fill_color: str = "4BACC6"
+    product_header_color: str = "92D050"
     error_color: str = "FF0000"
-    perfect_attendance_color: str = "C6EFCE"  # Light green
-    absent_color: str = "FFC7CE"  # Light red
+    perfect_attendance_color: str = "C6EFCE"
+    absent_color: str = "FFC7CE"
+    suspended_color: str = "D9D9D9"  # Light grey for suspended rows
 
     # Fonts
     header_font_name: str = "Times New Roman"
@@ -74,6 +84,19 @@ class ReportConfig:
             attendance_json_file=os.getenv("ATTENDANCE_JSON_FILE", "attendance.json"),
         )
 
+    def _side_file(self, filename: str) -> str:
+        """Return a path in the same directory as attendance_json_file."""
+        base_dir = os.path.dirname(self.attendance_json_file) or "."
+        return os.path.join(base_dir, filename)
+
+    @property
+    def suspended_json_file(self) -> str:
+        return os.getenv("SUSPENDED_FILE", self._side_file("suspended_salespeople.json"))
+
+    @property
+    def new_starters_json_file(self) -> str:
+        return os.getenv("NEW_STARTERS_FILE", self._side_file("new_starters.json"))
+
 
 # ============================================================================
 # DATA PROCESSING
@@ -89,7 +112,6 @@ class DataProcessor:
         for v in visits_data:
             rep_name = v.get("rep_name", "")
 
-            # Skip excluded accounts
             if is_excluded_account(rep_name):
                 logger.debug(f"Filtering out excluded visit from: {rep_name}")
                 continue
@@ -110,7 +132,6 @@ class DataProcessor:
         for o in orders_data:
             sales_rep = o.get("sales_rep", "")
 
-            # Skip excluded accounts
             if is_excluded_account(sales_rep):
                 logger.debug(f"Filtering out excluded order from: {sales_rep}")
                 continue
@@ -136,9 +157,7 @@ class DataProcessor:
         df_orders: pd.DataFrame
     ) -> pd.DataFrame:
         """Merge visits and orders data with fallback logic."""
-        # Handle empty dataframes
         if df_visits.empty and df_orders.empty:
-            # Both empty - return empty dataframe with expected columns
             return pd.DataFrame(columns=[
                 "customer_name_final",
                 "sales_rep_final",
@@ -147,7 +166,6 @@ class DataProcessor:
             ])
 
         if df_visits.empty:
-            # No visits - use orders data
             df_final = df_orders.copy()
             df_final["customer_name_final"] = df_final["customer_name"]
             df_final["sales_rep_final"] = df_final["sales_rep"]
@@ -155,15 +173,12 @@ class DataProcessor:
             return df_final
 
         if df_orders.empty:
-            # No orders - use visits data
             df_final = df_visits.copy()
             df_final["customer_name_final"] = df_final["customer_name"]
             df_final["sales_rep_final"] = df_final["sales_rep"]
             df_final["order_value"] = 0.0
             return df_final
 
-        # Both have data - proceed with merge
-        # Merge by ERP code
         df_merge_code = pd.merge(
             df_visits,
             df_orders,
@@ -173,7 +188,6 @@ class DataProcessor:
             suffixes=("_visit", "_order")
         )
 
-        # Merge by customer name
         df_merge_name = pd.merge(
             df_visits,
             df_orders,
@@ -183,13 +197,11 @@ class DataProcessor:
             suffixes=("_visit", "_order")
         )
 
-        # Combine both merges
         df_final = df_merge_code.copy()
         for col in ["order_value", "customer_code", "sales_rep_order", "order_id"]:
             if col in df_merge_name.columns:
                 df_final[col] = df_final[col].combine_first(df_merge_name[col])
 
-        # Create final columns
         df_final["customer_name_final"] = df_final.get("customer_name_visit", pd.Series("")).combine_first(
             df_final.get("customer_name_order", pd.Series(""))
         )
@@ -201,22 +213,11 @@ class DataProcessor:
 
     @staticmethod
     def get_sales_reps(df_final: pd.DataFrame) -> List[str]:
-        """
-        Get complete list of all sales representatives.
-        Includes both active reps (from data) and inactive reps (from config).
-        """
-        # Get reps who had activity
+        """Get complete list of all sales representatives."""
         active_reps = set(df_final["sales_rep_final"].dropna())
-
-        # Filter out any excluded accounts that might have slipped through
         active_reps = {rep for rep in active_reps if not is_excluded_account(rep)}
-
-        # Get all configured salespeople
         all_configured_reps = set(get_all_salespeople())
-
-        # Combine and sort
         all_reps = active_reps.union(all_configured_reps)
-
         return sorted(all_reps)
 
 
@@ -225,16 +226,7 @@ class DataProcessor:
 # ============================================================================
 
 def _generate_day_visits_sheet(df_final: pd.DataFrame, reps: List[str]) -> pd.DataFrame:
-    """
-    Generate Day Visits sheet showing all customer interactions.
-
-    Args:
-        df_final: Merged visits and orders data
-        reps: List of all salespeople
-
-    Returns:
-        DataFrame with columns: Salesperson, Customer Name, Time Spent
-    """
+    """Generate Day Visits sheet showing all customer interactions."""
     visit_rows = []
 
     for rep in sorted(reps):
@@ -288,8 +280,8 @@ class ExcelStyler:
 
         return max(18, min(409, calculated_height))
 
-    def apply_summary_styling(self, ws: Worksheet) -> None:
-        """Apply styling to summary sheet (wrap text, wider columns, with borders)."""
+    def apply_summary_styling(self, ws: Worksheet, suspension_checker: SuspensionChecker = None) -> None:
+        """Apply styling to summary sheet. Suspended rows get grey fill."""
         if not ws or ws.max_row == 0:
             logger.warning("Empty worksheet, skipping styling")
             return
@@ -315,28 +307,43 @@ class ExcelStyler:
         header_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
         try:
-            for col_idx, cell in enumerate(ws[1], start=1):
+            for cell in ws[1]:
                 cell.font = header_font
                 cell.fill = header_fill
                 cell.alignment = header_align
                 cell.border = thin_border
         except IndexError:
-            logger.warning("Cannot style header row - worksheet may be empty")
+            logger.warning("Cannot style header row — worksheet may be empty")
             return
 
-        body_font = Font(
-            name=self.config.body_font_name,
-            size=self.config.body_font_size
-        )
+        body_font = Font(name=self.config.body_font_name, size=self.config.body_font_size)
         body_align = Alignment(horizontal="left", vertical="center", wrap_text=True)
+        suspended_fill = PatternFill(
+            start_color=self.config.suspended_color,
+            end_color=self.config.suspended_color,
+            fill_type="solid"
+        )
+
+        # Find the SALESPERSON and APP USAGE column indices (1-based)
+        headers = [ws.cell(row=1, column=c).value for c in range(1, ws.max_column + 1)]
+        salesperson_col = next((i + 1 for i, h in enumerate(headers) if h == "SALESPERSON"), 1)
+        app_usage_col = next((i + 1 for i, h in enumerate(headers) if h == "APP USAGE"), None)
 
         for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
+            # Check if this row is a suspended person
+            is_suspended_row = False
+            if app_usage_col:
+                app_usage_cell = row[app_usage_col - 1]
+                if app_usage_cell.value == "Suspended":
+                    is_suspended_row = True
+
             for cell in row:
                 cell.font = body_font
                 cell.alignment = body_align
                 cell.border = thin_border
+                if is_suspended_row:
+                    cell.fill = suspended_fill
 
-        # Updated column widths (removed CUSTOMERS CALLED)
         column_widths = {
             1: 25,  # SALESPERSON
             2: 20,  # CUSTOMERS VISITED
@@ -352,27 +359,22 @@ class ExcelStyler:
 
         for row_idx in range(2, ws.max_row + 1):
             max_height = 18
-
             for col_idx in range(1, ws.max_column + 1):
                 cell = ws.cell(row=row_idx, column=col_idx)
                 cell_value = cell.value
-
                 if cell_value is None or (isinstance(cell_value, str) and not cell_value.strip()):
                     continue
-
                 col_width = column_widths.get(col_idx, 20)
-
                 try:
                     height = self.calculate_row_height(cell_value, col_width, self.config.body_font_size)
                     max_height = max(max_height, height)
                 except Exception as e:
                     logger.warning(f"Could not calculate height for row {row_idx}, col {col_idx}: {e}")
                     max_height = max(max_height, 35)
-
             ws.row_dimensions[row_idx].height = max_height
 
     def apply_attendance_grid_styling(self, ws: Worksheet) -> None:
-        """Apply styling to monthly attendance grid (daily checkmarks)."""
+        """Apply styling to monthly attendance grid."""
         if not ws or ws.max_row == 0:
             logger.warning("Empty worksheet, skipping styling")
             return
@@ -384,7 +386,6 @@ class ExcelStyler:
             bottom=Side(style='thin')
         )
 
-        # Header styling
         header_font = Font(
             name=self.config.header_font_name,
             size=self.config.header_font_size,
@@ -397,46 +398,47 @@ class ExcelStyler:
             fill_type="solid"
         )
 
-        # Style header row
         for cell in ws[1]:
             cell.font = header_font
             cell.fill = header_fill
             cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
             cell.border = thin_border
 
-        # Body styling - plain, no colors
         body_font = Font(name=self.config.body_font_name, size=self.config.body_font_size)
+        sus_fill = PatternFill(
+            start_color=self.config.suspended_color,
+            end_color=self.config.suspended_color,
+            fill_type="solid"
+        )
 
         for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
             for idx, cell in enumerate(row):
                 cell.font = body_font
                 cell.border = thin_border
 
-                # Center align date columns and checkmarks
-                if idx == 0:  # Salesperson column
+                if idx == 0:
                     cell.alignment = Alignment(horizontal="left", vertical="center")
-                else:  # Date columns and summary
+                else:
                     cell.alignment = Alignment(horizontal="center", vertical="center")
 
-        # Set column widths
-        ws.column_dimensions['A'].width = 25  # Salesperson
+                # Grey fill for SUS cells
+                if cell.value == "SUS":
+                    cell.fill = sus_fill
 
-        # Date columns - narrower
-        for col_idx in range(2, ws.max_column):  # All day columns
+        ws.column_dimensions['A'].width = 25
+
+        for col_idx in range(2, ws.max_column):
             col_letter = get_column_letter(col_idx)
             ws.column_dimensions[col_letter].width = 4
 
-        # Summary column - wider
         summary_col = get_column_letter(ws.max_column)
-        ws.column_dimensions[summary_col].width = 30
+        ws.column_dimensions[summary_col].width = 35
 
-        # Freeze first row and first column
         ws.freeze_panes = 'B2'
 
     def apply_attendance_styling(self, ws: Worksheet) -> None:
         """Apply styling to monthly attendance sheet."""
         if not ws or ws.max_row == 0:
-            logger.warning("Empty worksheet, skipping styling")
             return
 
         thin_border = Border(
@@ -446,7 +448,6 @@ class ExcelStyler:
             bottom=Side(style='thin')
         )
 
-        # Header styling
         header_font = Font(
             name=self.config.header_font_name,
             size=self.config.header_font_size,
@@ -465,20 +466,27 @@ class ExcelStyler:
             cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
             cell.border = thin_border
 
-        # Body styling - plain, no colors
         body_font = Font(name=self.config.body_font_name, size=self.config.body_font_size)
+        sus_fill = PatternFill(
+            start_color=self.config.suspended_color,
+            end_color=self.config.suspended_color,
+            fill_type="solid"
+        )
 
         for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+            attendance_value = row[1].value if len(row) > 1 else ""
+            is_suspended_row = isinstance(attendance_value, str) and "Suspended" in attendance_value
+
             for cell in row:
                 cell.font = body_font
                 cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
                 cell.border = thin_border
+                if is_suspended_row:
+                    cell.fill = sus_fill
 
-        # Set column widths
-        ws.column_dimensions['A'].width = 30  # Salesperson
-        ws.column_dimensions['B'].width = 60  # Attendance
+        ws.column_dimensions['A'].width = 30
+        ws.column_dimensions['B'].width = 60
 
-        # Adjust row heights
         for row_idx in range(2, ws.max_row + 1):
             attendance_cell = ws.cell(row=row_idx, column=2)
             if attendance_cell.value:
@@ -488,7 +496,6 @@ class ExcelStyler:
     def apply_day_visits_styling(self, ws: Worksheet) -> None:
         """Apply styling to Day Visits sheet."""
         if not ws or ws.max_row == 0:
-            logger.warning("Empty worksheet, skipping styling")
             return
 
         thin_border = Border(
@@ -498,7 +505,6 @@ class ExcelStyler:
             bottom=Side(style='thin')
         )
 
-        # Header styling
         header_font = Font(
             name=self.config.header_font_name,
             size=self.config.header_font_size,
@@ -517,7 +523,6 @@ class ExcelStyler:
             cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
             cell.border = thin_border
 
-        # Body styling
         body_font = Font(name=self.config.body_font_name, size=self.config.body_font_size)
 
         for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
@@ -526,10 +531,9 @@ class ExcelStyler:
                 cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
                 cell.border = thin_border
 
-        # Set column widths
-        ws.column_dimensions['A'].width = 30  # Salesperson
-        ws.column_dimensions['B'].width = 40  # Customer Name
-        ws.column_dimensions['C'].width = 20  # Time Spent
+        ws.column_dimensions['A'].width = 30
+        ws.column_dimensions['B'].width = 40
+        ws.column_dimensions['C'].width = 20
 
     def format_money_columns(self, ws: Worksheet, columns: List[int]) -> None:
         """Format specific columns as money."""
@@ -542,6 +546,7 @@ class ExcelStyler:
 # ============================================================================
 # SUMMARY GENERATOR
 # ============================================================================
+
 class SummaryGenerator:
     """Generates summary reports."""
 
@@ -550,20 +555,38 @@ class SummaryGenerator:
         reps: List[str],
         df_final: pd.DataFrame,
         report_date: datetime,
-        leave_checker: 'LeaveChecker'
+        leave_checker: LeaveChecker,
+        suspension_checker: SuspensionChecker = None,
+        new_starter_checker: NewStarterChecker = None,
     ) -> pd.DataFrame:
         """Generate summary statistics for each sales rep (visits only)."""
         summary_rows = []
 
         for rep in reps:
-            # Check if on leave today
+            # Suspended takes top priority
+            if suspension_checker and suspension_checker.is_suspended(rep, report_date):
+                summary_rows.append({
+                    "SALESPERSON": rep,
+                    "CUSTOMERS VISITED": 0,
+                    "APP USAGE": "Suspended",
+                })
+                continue
+
+            # Before new starter's start date — show as not yet active
+            if new_starter_checker and new_starter_checker.is_before_start(rep, report_date):
+                # Shouldn't normally appear on this date, but guard just in case
+                summary_rows.append({
+                    "SALESPERSON": rep,
+                    "CUSTOMERS VISITED": 0,
+                    "APP USAGE": "Not yet started",
+                })
+                continue
+
             is_on_leave = leave_checker.is_on_leave(rep, report_date)
 
-            # Visits data
             rep_visits = df_final[df_final["sales_rep_final"] == rep]
             customers_visited = rep_visits["customer_name_final"].nunique()
 
-            # Determine app usage
             if is_on_leave:
                 app_usage = "On Leave"
             elif customers_visited > 0:
@@ -574,7 +597,7 @@ class SummaryGenerator:
             summary_rows.append({
                 "SALESPERSON": rep,
                 "CUSTOMERS VISITED": customers_visited,
-                "APP USAGE": app_usage
+                "APP USAGE": app_usage,
             })
 
         return pd.DataFrame(summary_rows)
@@ -582,7 +605,6 @@ class SummaryGenerator:
     def export_summary_text(self, df_summary: pd.DataFrame, filepath: str) -> None:
         """Export summary as formatted text for email."""
         summary_for_email = df_summary.copy()
-
         summary_for_email["CUSTOMERS VISITED"] = \
             summary_for_email["CUSTOMERS VISITED"].map(lambda x: f"{int(x):,}")
 
@@ -609,53 +631,35 @@ class SummaryGenerator:
 # ============================================================================
 
 def _generate_holiday_report(report_date: datetime, config: ReportConfig) -> None:
-    """
-    Generate a special holiday report with centered message.
-
-    Args:
-        report_date: The holiday date
-        config: Report configuration
-    """
-    import pandas as pd
+    """Generate a special holiday report with centered message."""
     from openpyxl.styles import Font, Alignment
 
-    # Remove old file if exists
     if os.path.exists(config.output_file):
         os.remove(config.output_file)
 
     logger.info("📝 Creating holiday report...")
 
-    # Create a simple dataframe with holiday message
     holiday_message = f"🎉 PUBLIC HOLIDAY - {report_date.strftime('%A, %B %d, %Y')}"
     no_data_message = "No business activities recorded on this date"
 
-    # Create Excel file with holiday message
     with pd.ExcelWriter(config.output_file, engine="openpyxl") as writer:
-        # Create a simple sheet
-        df_holiday = pd.DataFrame({
-            "": [holiday_message, "", no_data_message]
-        })
-
+        df_holiday = pd.DataFrame({"": [holiday_message, "", no_data_message]})
         df_holiday.to_excel(writer, index=False, sheet_name="Holiday Notice", header=False)
 
-        # Get the worksheet to apply formatting
         ws = writer.sheets["Holiday Notice"]
 
-        # Merge cells for holiday message (row 1)
         ws.merge_cells('A1:E1')
         cell_a1 = ws['A1']
         cell_a1.font = Font(name="Times New Roman", size=18, bold=True, color="FF0000")
         cell_a1.alignment = Alignment(horizontal="center", vertical="center")
         ws.row_dimensions[1].height = 40
 
-        # Merge cells for no data message (row 3)
         ws.merge_cells('A3:E3')
         cell_a3 = ws['A3']
         cell_a3.font = Font(name="Times New Roman", size=14, italic=True)
         cell_a3.alignment = Alignment(horizontal="center", vertical="center")
         ws.row_dimensions[3].height = 30
 
-        # Set column width
         ws.column_dimensions['A'].width = 100
 
     logger.info(f"✅ Holiday report generated: {config.output_file}")
@@ -674,133 +678,145 @@ def generate_detailed_report(
     """
     Generate simplified CSFA report with attendance tracking.
 
-    SIMPLIFIED VERSION:
-    - Only tracks customer visits (no "customers called")
-    - Only 3 sheets: Summary, Attendance Grid, Monthly Attendance
-    - No individual salesperson sheets
+    Sheets:
+      1. Day Summary
+      2. Attendance Grid - {Month}
+      3. Monthly Attendance - {Month}
+      4. Day Visits
 
-    Args:
-        visits_data: List of visit records
-        orders_data: List of order records
-        report_date: Date for which the report is being generated (defaults to TODAY)
-        config: Optional configuration object
+    Supports:
+      - Suspended salespeople (shown as "Suspended" in summary, SUS in grid)
+      - New starters (blank cells before their start date)
     """
     if config is None:
         config = ReportConfig.from_env()
 
     if report_date is None:
-        # Use today's date by default (reports run at end of business day)
         report_date = get_report_date()
 
     access_token = os.getenv("ACCESS_TOKEN")
     if not access_token:
         raise ValueError("ACCESS_TOKEN not found in environment variables")
 
-    logger.info(f"🚀 Starting simplified report generation: {config.output_file}")
+    logger.info(f"🚀 Starting report generation: {config.output_file}")
     logger.info(f"📅 Report date: {report_date.strftime('%A, %Y-%m-%d')}")
     logger.info(f"⏰ Generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
-    # Check if this is a holiday
+    # Holiday check
     holiday_checker = HolidayChecker(config.attendance_json_file.replace("attendance.json", "holidays.json"))
     if holiday_checker.is_holiday(report_date):
-        logger.info("🎉 Holiday detected - generating special holiday report")
+        logger.info("🎉 Holiday detected — generating special holiday report")
         _generate_holiday_report(report_date, config)
         return
 
-    # Remove old file
     if os.path.exists(config.output_file):
         os.remove(config.output_file)
         logger.info(f"Removed old file: {config.output_file}")
 
-    # Initialize processors
+    # Initialise all checkers
     processor = DataProcessor()
     styler = ExcelStyler(config)
     summary_gen = SummaryGenerator()
 
-    # Initialize attendance tracker and leave checker
     attendance_tracker = AttendanceTracker(config.attendance_json_file)
     leave_checker = LeaveChecker(config.attendance_json_file.replace("attendance.json", "leave_days.json"))
+    suspension_checker = SuspensionChecker(config.suspended_json_file)
+    new_starter_checker = NewStarterChecker(config.new_starters_json_file)
 
-    # Process data
+    # Process visit/order data
     logger.info("📊 Processing data...")
     df_visits = processor.clean_visits(visits_data)
     df_orders = processor.clean_orders(orders_data)
 
-    # Check if we have any data
     if df_visits.empty and df_orders.empty:
-        logger.warning("⚠️  No visits or orders data - generating report with attendance only")
-        logger.warning("⚠️  This is normal for holidays or weekends")
+        logger.warning("⚠️  No visits or orders data — generating report with attendance only")
 
     df_final = processor.merge_visits_orders(df_visits, df_orders)
     reps = processor.get_sales_reps(df_final)
 
     logger.info(f"Found {len(reps)} sales representatives")
 
-    # Generate summary (simplified - visits only, with leave checker)
-    df_summary = summary_gen.generate_summary(reps, df_final, report_date, leave_checker)
+    # Summary (visits only) — includes suspension + new-starter awareness
+    df_summary = summary_gen.generate_summary(
+        reps, df_final, report_date, leave_checker,
+        suspension_checker=suspension_checker,
+        new_starter_checker=new_starter_checker,
+    )
 
-    # Update attendance tracking (exclude people on leave)
+    # Attendance update — suspended people and pre-start days are skipped
     logger.info("📅 Updating attendance tracking...")
     salespeople_present = list(df_summary[df_summary["APP USAGE"] == "Used App"]["SALESPERSON"])
-    update_attendance_for_date(attendance_tracker, salespeople_present, reps, report_date, leave_checker)
+    update_attendance_for_date(
+        attendance_tracker,
+        salespeople_present,
+        reps,
+        report_date,
+        leave_checker=leave_checker,
+        suspension_checker=suspension_checker,
+        new_starter_checker=new_starter_checker,
+    )
 
-    # Generate monthly attendance summary for email
-    month_name = report_date.strftime("%B")  # e.g., "February"
+    month_name = report_date.strftime("%B")
+
+    # Monthly attendance summary (text, for email)
     logger.info(f"📋 Generating monthly attendance summary for {month_name}...")
     attendance_summary = generate_monthly_attendance_summary(
         attendance_tracker,
         reps,
         report_date.year,
         report_date.month,
-        leave_checker
+        leave_checker=leave_checker,
+        suspension_checker=suspension_checker,
+        new_starter_checker=new_starter_checker,
     )
     df_attendance_summary = pd.DataFrame(attendance_summary)
 
-    # Generate daily attendance grid for Excel
-    logger.info(f"📊 Generating daily attendance grid for Excel...")
+    # Daily attendance grid (Excel)
+    logger.info("📊 Generating daily attendance grid...")
     df_attendance_grid = generate_monthly_attendance_grid(
         attendance_tracker,
         reps,
         report_date.year,
         report_date.month,
-        leave_checker,
-        report_date  # Pass current date to only show past days
+        leave_checker=leave_checker,
+        current_date=report_date,
+        suspension_checker=suspension_checker,
+        new_starter_checker=new_starter_checker,
     )
 
-    # Generate Day Visits sheet
+    # Day visits sheet
     logger.info("📋 Generating Day Visits sheet...")
     df_day_visits = _generate_day_visits_sheet(df_final, reps)
 
-    # Create Excel file (4 sheets now: Day Summary, Attendance Grid, Monthly Attendance, Day Visits)
-    logger.info("📝 Creating Excel file with Day Summary, Attendance, and Day Visits...")
+    # Write Excel
+    logger.info("📝 Creating Excel file...")
     with pd.ExcelWriter(config.output_file, engine="openpyxl") as writer:
-        # 1. Day Summary sheet (renamed from "Summary")
+        # 1. Day Summary
         df_summary.to_excel(writer, index=False, sheet_name="Day Summary")
         ws = writer.sheets["Day Summary"]
-        styler.apply_summary_styling(ws)
+        styler.apply_summary_styling(ws, suspension_checker=suspension_checker)
 
-        # 2. Monthly Attendance Grid (for Excel viewing - with checkmarks)
+        # 2. Attendance Grid
         df_attendance_grid.to_excel(writer, index=False, sheet_name=f"Attendance Grid - {month_name}")
-        ws_attendance_grid = writer.sheets[f"Attendance Grid - {month_name}"]
-        styler.apply_attendance_grid_styling(ws_attendance_grid)
+        ws_grid = writer.sheets[f"Attendance Grid - {month_name}"]
+        styler.apply_attendance_grid_styling(ws_grid)
 
-        # 3. Monthly Attendance Summary (for email - text format)
+        # 3. Monthly Attendance Summary
         df_attendance_summary.to_excel(writer, index=False, sheet_name=f"Monthly Attendance - {month_name}")
-        ws_attendance_summary = writer.sheets[f"Monthly Attendance - {month_name}"]
-        styler.apply_attendance_styling(ws_attendance_summary)
+        ws_att = writer.sheets[f"Monthly Attendance - {month_name}"]
+        styler.apply_attendance_styling(ws_att)
 
-        # 4. Day Visits sheet (customer visit details)
+        # 4. Day Visits
         df_day_visits.to_excel(writer, index=False, sheet_name="Day Visits")
-        ws_day_visits = writer.sheets["Day Visits"]
-        styler.apply_day_visits_styling(ws_day_visits)
+        ws_visits = writer.sheets["Day Visits"]
+        styler.apply_day_visits_styling(ws_visits)
 
-    # Export summary files (keep text summary for email)
     summary_gen.export_summary_text(df_summary, config.summary_text_file)
     summary_gen.export_summary_image(df_summary, config.summary_image_file)
 
     logger.info(f"✅ Report generation complete: {config.output_file}")
-    logger.info(f"✅ Report contains 4 sheets: Day Summary, Attendance Grid, Monthly Attendance, Day Visits")
-    logger.info(f"✅ Attendance tracking updated in: {config.attendance_json_file}")
+    logger.info("✅ Sheets: Day Summary | Attendance Grid | Monthly Attendance | Day Visits")
+    logger.info(f"✅ Attendance tracking updated: {config.attendance_json_file}")
 
 
 # ============================================================================
