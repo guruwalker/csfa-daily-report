@@ -1,11 +1,11 @@
         SALESPERSON CUSTOMERS VISITED       APP USAGE
-    ADERITO MACHOVO                 9        Used App
-     ANDRE MARQUEZA                 7        Used App
-    FRANCISCO TOMAS                 5        Used App
+    ADERITO MACHOVO                 6        Used App
+     ANDRE MARQUEZA                 5        Used App
+    FRANCISCO TOMAS                 3        Used App
     HENRIQUE BERTUR                 0       Suspended
         IMRAN AHMED                 0 Did Not Use App
-       ITO BENEDITO                 7        Used App
-   KUMAR CHAMPAKLAL                 6        Used App
-RICARDO DINIS LANGA                 5        Used App
+       ITO BENEDITO                 6        Used App
+   KUMAR CHAMPAKLAL                 3        Used App
+RICARDO DINIS LANGA                 6        Used App
    RICARDO MACUACUA                 0       Suspended
-      SAIDATA ZALIA                 2        Used App
+      SAIDATA ZALIA                 0 Did Not Use App
