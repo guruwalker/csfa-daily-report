@@ -18,8 +18,8 @@ ALL_SALESPEOPLE = [
     "ITO BENEDITO",
     "FRANCISCO TOMAS",
     "SAIDATA ZALIA",
-    "HENRIQUE BERTUR",
-    "RICARDO MACUACUA",   # <-- comma was missing here, causing concatenation with next entry
+    # "HENRIQUE BERTUR",
+    # "RICARDO MACUACUA",   # <-- comma was missing here, causing concatenation with next entry
     "ADERITO MACHOVO",
 ]
 
